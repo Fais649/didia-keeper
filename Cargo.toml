@@ -1,0 +1,23 @@
+[package]
+name = "didia-keeper"
+version = "0.1.0"
+edition = "2021"
+description = "Keeps Didia (Dia without AI and Atlassian features) built from official Dia releases"
+
+[[bin]]
+name = "didia-keeper"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.36"
+winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+plist = "1"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = 2

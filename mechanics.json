@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "name": "update feed",
+      "group": "updates",
+      "value": "https://releases.diabrowser.com/BoostBrowser-updates.xml",
+      "source": "official Dia update host (releases.diabrowser.com in the Dia program)"
+    },
+    {
+      "name": "required signer team id",
+      "group": "updates",
+      "value": "S6N382Y83G",
+      "source": "codesign -dv of official Dia (TeamIdentifier)"
+    },
+    {
+      "name": "background run interval",
+      "group": "updates",
+      "value": 600,
+      "unit": "s",
+      "source": "design choice: frequent, cheap local check; feed limited separately"
+    },
+    {
+      "name": "feed check interval",
+      "group": "updates",
+      "value": 14400,
+      "unit": "s",
+      "source": "Dia Info.plist SUScheduledCheckInterval is 28800; checked twice as often"
+    },
+    {
+      "name": "install while Didia is open",
+      "group": "updates",
+      "value": "stage, swap after quit",
+      "estimated": true
+    },
+    {
+      "name": "skip delta updates",
+      "group": "updates",
+      "value": true,
+      "source": "feed enclosures ending .delta"
+    },
+    {
+      "name": "Dia's own updater",
+      "group": "build",
+      "value": false,
+      "source": "Info.plist SUEnableAutomaticChecks in /Applications/Didia.app"
+    },
+    {
+      "name": "display name",
+      "group": "build",
+      "value": "Didia",
+      "source": "Info.plist CFBundleDisplayName"
+    },
+    {
+      "name": "signature",
+      "group": "build",
+      "value": "ad-hoc with audio, camera, location entitlements",
+      "source": "Dia's camera, microphone and location use (codesign -d --entitlements of official Dia)"
+    },
+    {
+      "name": "AppleScript JavaScript flag",
+      "group": "build",
+      "value": "--enable-applescript-javascript",
+      "source": "patch/didia_patch.m"
+    },
+    {
+      "name": "AppleScript JavaScript by default",
+      "group": "build",
+      "value": false,
+      "source": "src/keeper.rs Settings::default"
+    },
+    {
+      "name": "feature flag override key",
+      "group": "flags",
+      "value": "transientFeatureFlagOverrides",
+      "source": "string 0x106ba2b70, key list 0x1003cfca4"
+    },
+    {
+      "name": "override separator",
+      "group": "flags",
+      "value": "|",
+      "source": "function near 0x1011d4084"
+    },
+    {
+      "name": "flag/value separator",
+      "group": "flags",
+      "value": "=",
+      "source": "function 0x1011d4248 (0x1011d4278)"
+    },
+    {
+      "name": "flag off value",
+      "group": "flags",
+      "value": "false",
+      "estimated": true
+    },
+    {
+      "name": "AI flags switched off",
+      "group": "flags",
+      "value": 66,
+      "source": "Dia program strings (*-enabled flag names)"
+    },
+    {
+      "name": "Atlassian flags switched off",
+      "group": "flags",
+      "value": 10,
+      "source": "Dia program strings (atlassian-* flag names)"
+    },
+    {
+      "name": "page content extraction",
+      "group": "flags",
+      "value": false,
+      "source": "UserDefaults key enablePageContentExtraction"
+    },
+    {
+      "name": "button sweep interval",
+      "group": "backup hiding",
+      "value": 0.5,
+      "unit": "s",
+      "source": "patch/didia_patch.m"
+    },
+    {
+      "name": "Clia AI",
+      "group": "clia",
+      "value": "kept, on your own Claude subscription",
+      "source": "src/byo.rs; agent-server.js start-up (Vertex env) in Dia's agent-server.map"
+    },
+    {
+      "name": "Clia token variable",
+      "group": "clia",
+      "value": "CLAUDE_CODE_OAUTH_TOKEN",
+      "source": "Claude Code env list in Dia's handler.js"
+    },
+    {
+      "name": "Clia model id rewrite",
+      "group": "clia",
+      "value": "name@date -> name-date",
+      "source": "Vertex vs Anthropic model naming"
+    },
+    {
+      "name": "Clia sandbox network",
+      "group": "clia",
+      "value": "tcp *:443",
+      "source": "agent-claude-code.sb allowed only localhost:GATEWAY_PORT"
+    },
+    {
+      "name": "Clia plan prompts",
+      "group": "clia",
+      "value": false,
+      "source": "src/flags.rs PLAN_FLAGS (Dia flag names)"
+    },
+    {
+      "name": "Codex support",
+      "group": "clia",
+      "value": false,
+      "source": "no Codex harness in Dia's handler.js (0 mentions)"
+    }
+  ]
+}
