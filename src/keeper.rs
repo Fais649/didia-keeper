@@ -1,5 +1,5 @@
 //! Didia Keeper's work: read Dia's official update feed, download and verify official
-//! releases, build Didia or Clia from them (patch + re-sign) and install it.
+//! releases, build Didia from them (patch + re-sign) and install it.
 use crate::{flags, macho};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -38,70 +38,24 @@ pub fn log_path() -> PathBuf {
 pub fn pristine_app() -> PathBuf {
     work_dir().join("pristine/Dia.app")
 }
-pub fn staged_app(e: Edition) -> PathBuf {
-    work_dir().join(format!("staged/{}.app", e.name()))
+pub fn staged_app() -> PathBuf {
+    work_dir().join("staged/Didia.app")
+}
+pub fn install_path() -> PathBuf {
+    PathBuf::from("/Applications/Didia.app")
 }
 pub fn agent_plist() -> PathBuf {
     home().join(format!("Library/LaunchAgents/{AGENT_LABEL}.plist"))
 }
 
-/// Which browser to make from official Dia.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Edition {
-    /// Dia without AI and without Atlassian.
-    #[default]
-    Didia,
-    /// Dia's plan-locked AI and Atlassian removed; a Claude panel on your own Claude Code instead.
-    Clia,
-}
-impl Edition {
-    pub fn name(self) -> &'static str {
-        match self {
-            Edition::Didia => "Didia",
-            Edition::Clia => "Clia",
-        }
-    }
-    pub fn install_path(self) -> PathBuf {
-        PathBuf::from(format!("/Applications/{}.app", self.name()))
-    }
-    pub fn other(self) -> Edition {
-        match self {
-            Edition::Didia => Edition::Clia,
-            Edition::Clia => Edition::Didia,
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+/// Saved settings. Old keys from earlier versions (edition, own_claude, ...) are ignored.
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
-    pub edition: Edition,
-    /// Didia: switch Dia's AI off.
-    pub remove_ai: bool,
-    /// Didia: switch Atlassian off (Clia always does).
-    pub remove_atlassian: bool,
+    /// Let automation tools run JavaScript in tabs through AppleScript.
     pub applescript_js: bool,
-    /// Clia: add the Claude panel that runs the person's own Claude Code.
-    pub own_claude: bool,
-    /// Clia: make a daily brief from the person's connected apps each morning.
-    pub daily_brief: bool,
-}
-impl Default for Settings {
-    fn default() -> Self {
-        Settings { edition: Edition::Didia, remove_ai: true, remove_atlassian: true, applescript_js: false, own_claude: true, daily_brief: true }
-    }
 }
 impl Settings {
-    /// (AI off, Atlassian off, Dia's paid-plan prompts off) for the chosen edition.
-    /// Clia switches Dia's own AI off too (it is tied to Dia's plans) and brings its own panel.
-    pub fn switches(&self) -> (bool, bool, bool) {
-        match self.edition {
-            // Didia always has Dia's AI (chat button included) and Atlassian switched off completely.
-            Edition::Didia => (true, true, true),
-            Edition::Clia => (true, true, true),
-        }
-    }
     pub fn load() -> Self {
         fs::read(work_dir().join("settings.json"))
             .ok()
@@ -141,7 +95,7 @@ pub struct AppInfo {
 pub enum MadeBy {
     #[default]
     Unknown,
-    Keeper { edition: Edition, ai_off: bool, atlassian_off: bool, own_claude: bool },
+    Keeper { applescript_js: bool },
     Official,
 }
 
@@ -153,9 +107,8 @@ pub fn app_info(app: &Path) -> Option<AppInfo> {
     let res = app.join("Contents/Resources/DidiaPatch.plist");
     let made_by = if let Ok(p) = plist::Value::from_file(&res) {
         let pd = p.as_dictionary().cloned().unwrap_or_default();
-        let b = |k: &str| pd.get(k).and_then(|v| v.as_boolean()).unwrap_or(false);
-        let edition = if pd.get("edition").and_then(|v| v.as_string()) == Some("Clia") { Edition::Clia } else { Edition::Didia };
-        MadeBy::Keeper { edition, ai_off: b("removeAI"), atlassian_off: b("removeAtlassian"), own_claude: b("claudePanel") }
+        let applescript_js = pd.get("appleScriptJavaScript").and_then(|v| v.as_boolean()).unwrap_or(false);
+        MadeBy::Keeper { applescript_js }
     } else if matches!(d.get("CFBundleDisplayName").and_then(|v| v.as_string()), Some("Didia") | Some("Clia")) {
         MadeBy::Unknown
     } else {
@@ -230,51 +183,47 @@ pub fn verify_official(app: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn is_running(e: Edition) -> bool {
+pub fn is_running() -> bool {
     Command::new("/usr/bin/pgrep")
-        .args(["-f", &format!("{}/Contents/MacOS/", e.install_path().display())])
+        .args(["-f", &format!("{}/Contents/MacOS/", install_path().display())])
         .stdout(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
 }
 
-/// Quit an edition the normal way (Dia restores its windows next time), waiting up to 30 s.
-pub fn quit_edition(e: Edition) -> Result<(), String> {
-    if !is_running(e) {
+/// Quit Didia the normal way (Dia restores its windows next time), waiting up to 30 s.
+pub fn quit_didia() -> Result<(), String> {
+    if !is_running() {
         return Ok(());
     }
-    let script = format!("tell application \"{}\" to quit", e.install_path().display());
+    let script = format!("tell application \"{}\" to quit", install_path().display());
     let _ = Command::new("/usr/bin/osascript").args(["-e", &script]).output();
     for _ in 0..60 {
-        if !is_running(e) {
-            log(&format!("quit {}", e.name()));
+        if !is_running() {
+            log("quit Didia");
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Err(format!("{} didn't quit; quit it yourself, then open {}", e.name(), e.other().name()))
+    Err("Didia didn't quit; quit it yourself, then open it again".into())
 }
 
-/// Open an edition. Didia and Clia share Dia's profile, so the other one is quit first
-/// (otherwise the running one would just take over the request).
-pub fn open_edition(e: Edition) -> Result<String, String> {
-    if !e.install_path().exists() {
-        return Err(format!("{} isn't installed yet", e.name()));
+pub fn open_didia() -> Result<String, String> {
+    if !install_path().exists() {
+        return Err("Didia isn't installed yet".into());
     }
-    quit_edition(e.other())?;
-    run("/usr/bin/open", &[e.install_path().to_str().unwrap()])?;
-    log(&format!("opened {}", e.name()));
-    Ok(format!("{} is open.", e.name()))
+    run("/usr/bin/open", &[install_path().to_str().unwrap()])?;
+    log("opened Didia");
+    Ok("Didia is open.".into())
 }
 
-/// Whether the installed edition matches the current choices (else it needs a rebuild).
+/// Whether the installed Didia was made by this tool with the current settings
+/// (else it needs a rebuild).
 pub fn installed_matches(s: &Settings) -> bool {
-    let (ai, atl, _) = s.switches();
-    let own = s.edition == Edition::Clia && s.own_claude;
     matches!(
-        app_info(&s.edition.install_path()).map(|i| i.made_by),
-        Some(MadeBy::Keeper { ai_off, atlassian_off, own_claude, .. }) if ai_off == ai && atlassian_off == atl && own_claude == own
+        app_info(&install_path()).map(|i| i.made_by),
+        Some(MadeBy::Keeper { applescript_js }) if applescript_js == s.applescript_js
     )
 }
 
@@ -379,15 +328,14 @@ pub fn ensure_pristine(p: &Option<Shared>) -> Result<(), String> {
 }
 
 /// Build Didia from a pristine official Dia.
-pub fn build_edition(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) -> Result<(), String> {
-    let name = s.edition.name();
+pub fn build_didia(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) -> Result<(), String> {
     set_step(p, "Copying Dia", None);
     let _ = fs::remove_dir_all(dest);
     fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
     run("/usr/bin/ditto", &[src.to_str().unwrap(), dest.to_str().unwrap()])?;
     let contents = dest.join("Contents");
 
-    set_step(p, &format!("Adding the {name} patch"), None);
+    set_step(p, "Adding the Didia patch", None);
     fs::write(contents.join("Frameworks/libdidia.dylib"), PATCH_DYLIB).map_err(|e| e.to_string())?;
     let info_path = contents.join("Info.plist");
     let mut info = plist::Value::from_file(&info_path).map_err(|e| e.to_string())?;
@@ -413,14 +361,14 @@ pub fn build_edition(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) 
         d.insert("SUEnableAutomaticChecks".into(), plist::Value::Boolean(false));
         d.insert("SUAutomaticallyUpdate".into(), plist::Value::Boolean(false));
         d.remove("SUFeedURL");
-        d.insert("CFBundleDisplayName".into(), plist::Value::String(name.into()));
+        d.insert("CFBundleDisplayName".into(), plist::Value::String("Didia".into()));
     }
     info.to_file_xml(&info_path).map_err(|e| e.to_string())?;
-    flags::patch_config(s)
+    flags::patch_config(s.applescript_js)
         .to_file_xml(contents.join("Resources/DidiaPatch.plist"))
         .map_err(|e| e.to_string())?;
 
-    set_step(p, &format!("Signing {name} for this Mac"), None);
+    set_step(p, "Signing Didia for this Mac", None);
     let ent = work_dir().join("entitlements.plist");
     fs::create_dir_all(work_dir()).map_err(|e| e.to_string())?;
     fs::write(&ent, ENTITLEMENTS).map_err(|e| e.to_string())?;
@@ -430,24 +378,22 @@ pub fn build_edition(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) 
     run("/usr/bin/codesign", &["--verify", "--deep", "--strict", d])?;
     let _ = run("/usr/bin/xattr", &["-dr", "com.apple.quarantine", d]);
     let v = app_info(dest).map(|i| i.version).unwrap_or_default();
-    let (ai, atl, _) = s.switches();
-    log(&format!("built {name} {v} (AI off: {ai}, Atlassian off: {atl}, Claude panel: {})", s.edition == Edition::Clia && s.own_claude));
+    log(&format!("built Didia {v} (AI and Atlassian off, AppleScript JavaScript: {})", s.applescript_js));
     Ok(())
 }
 
 /// Swap the staged build into /Applications (keeping the previous one aside).
-pub fn install_staged(e: Edition) -> Result<String, String> {
-    let name = e.name();
-    let staged = staged_app(e);
+pub fn install_staged() -> Result<String, String> {
+    let staged = staged_app();
     if !staged.exists() {
         return Err("nothing waiting to be installed".into());
     }
-    if is_running(e) {
-        return Err(format!("{name} is open; it will be installed after you quit it"));
+    if is_running() {
+        return Err("Didia is open; it will be installed after you quit it".into());
     }
-    let installed = e.install_path();
+    let installed = install_path();
     let inst = installed.to_str().unwrap().to_string();
-    let previous = work_dir().join(format!("previous/{name}.app"));
+    let previous = work_dir().join("previous/Didia.app");
     let _ = fs::remove_dir_all(&previous);
     if installed.exists() {
         fs::create_dir_all(previous.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -467,45 +413,30 @@ pub fn install_staged(e: Edition) -> Result<String, String> {
         &["-f", &inst],
     );
     let v = app_info(&installed).map(|i| i.version).unwrap_or_default();
-    log(&format!("installed {name} {v}"));
+    log(&format!("installed Didia {v}"));
     Ok(v)
 }
 
-/// Build from the pristine copy, then install now or after the app quits.
+/// Build from the pristine copy, then install now or after Didia quits.
 pub fn rebuild_and_install(s: &Settings, p: &Option<Shared>) -> Result<String, String> {
     ensure_pristine(p)?;
-    let e = s.edition;
-    let name = e.name();
-    build_edition(&pristine_app(), &staged_app(e), s, p)?;
+    build_didia(&pristine_app(), &staged_app(), s, p)?;
     set_step(p, "Installing", None);
-    if is_running(e) {
-        let v = app_info(&staged_app(e)).map(|i| i.version).unwrap_or_default();
-        log(&format!("{name} {v} is ready; it installs after {name} quits"));
-        Ok(format!("{name} {v} is ready. Quit {name} and it installs on the next check (or press Install now)."))
+    if is_running() {
+        let v = app_info(&staged_app()).map(|i| i.version).unwrap_or_default();
+        log(&format!("Didia {v} is ready; it installs after Didia quits"));
+        Ok(format!("Didia {v} is ready. Quit Didia and it installs on the next check (or press Install now)."))
     } else {
-        install_staged(e).map(|v| format!("{name} {v} is installed."))
+        install_staged().map(|v| format!("Didia {v} is installed."))
     }
 }
 
-/// Editions to keep current: the chosen one, plus any other one this tool installed.
-pub fn editions_to_keep(s: &Settings) -> Vec<Edition> {
-    let mut v = vec![s.edition];
-    let o = s.edition.other();
-    if matches!(app_info(&o.install_path()).map(|i| i.made_by), Some(MadeBy::Keeper { .. })) {
-        v.push(o);
-    }
-    v
-}
-
-/// The background job: install waiting builds, then (at most every 4 hours) check the
-/// official feed and rebuild every installed edition when a newer release is out.
+/// The background job: install a waiting build, then (at most every 4 hours) check the
+/// official feed and rebuild Didia when a newer release is out.
 pub fn check_and_update(force: bool, s: &Settings, p: &Option<Shared>) -> Result<String, String> {
-    let editions = editions_to_keep(s);
-    for &e in &editions {
-        if staged_app(e).exists() && !is_running(e) {
-            if let Ok(v) = install_staged(e) {
-                notify(&format!("{} updated to {v}", e.name()));
-            }
+    if staged_app().exists() && !is_running() {
+        if let Ok(v) = install_staged() {
+            notify(&format!("Didia updated to {v}"));
         }
     }
     let stamp = work_dir().join("last_check");
@@ -521,33 +452,20 @@ pub fn check_and_update(force: bool, s: &Settings, p: &Option<Shared>) -> Result
     let _ = fs::create_dir_all(work_dir());
     let _ = fs::write(&stamp, b"");
     set_step(p, "Reading Dia's update feed", None);
-    let rel = fetch_latest().map_err(|e| {
-        log(&e);
-        e
-    })?;
+    let rel = fetch_latest().inspect_err(|e| log(e))?;
     if let Some(p) = p {
         p.lock().unwrap().latest = Some(rel.clone());
     }
-    let mut done = vec![];
-    for &e in &editions {
-        let se = Settings { edition: e, ..s.clone() };
-        let have = app_info(&staged_app(e)).map(|i| i.build).unwrap_or(0);
-        let installed_build = app_info(&e.install_path()).map(|i| i.build).unwrap_or(0);
-        // The chosen edition is also rebuilt when its choices changed; others only for new releases.
-        let current = rel.build <= have.max(installed_build) && (e != s.edition || installed_matches(&se));
-        if current {
-            continue;
-        }
-        if rel.build > app_info(&pristine_app()).map(|i| i.build).unwrap_or(0) {
-            download_release(&rel, p)?;
-        }
-        done.push(rebuild_and_install(&se, p)?);
+    let have = app_info(&staged_app()).map(|i| i.build).unwrap_or(0);
+    let installed_build = app_info(&install_path()).map(|i| i.build).unwrap_or(0);
+    // Also rebuilt when the settings changed since the installed Didia was made.
+    if rel.build <= have.max(installed_build) && installed_matches(s) {
+        return Ok(format!("Didia is up to date (Dia {}).", rel.version));
     }
-    if done.is_empty() {
-        let names: Vec<&str> = editions.iter().map(|e| e.name()).collect();
-        return Ok(format!("{} up to date (Dia {}).", names.join(" and "), rel.version));
+    if rel.build > app_info(&pristine_app()).map(|i| i.build).unwrap_or(0) {
+        download_release(&rel, p)?;
     }
-    let msg = done.join(" ");
+    let msg = rebuild_and_install(s, p)?;
     if p.is_none() {
         notify(&msg);
     }
@@ -643,18 +561,17 @@ pub fn default_browser() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Make an edition the default web browser. macOS shows a dialog the person confirms.
-/// Didia and Clia share Dia's app identity, so the other edition is taken out of the
-/// list of apps macOS picks from (it still opens normally from Applications).
-pub fn make_default_browser(e: Edition) -> Result<String, String> {
-    let path = e.install_path();
+/// Make Didia the default web browser. macOS shows a dialog the person confirms.
+/// Didia shares Dia's app identity, so the kept official copy is taken out of the list
+/// of apps macOS picks from (Dia itself still opens normally from Applications).
+pub fn make_default_browser() -> Result<String, String> {
+    let path = install_path();
     if !path.exists() {
-        return Err(format!("{} isn't installed yet", e.name()));
+        return Err("Didia isn't installed yet".into());
     }
     let helper = set_default_helper()?;
     let lsr = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-    let others = [e.other().install_path(), pristine_app(), staged_app(e.other()), work_dir().join(format!("previous/{}.app", e.other().name()))];
-    for o in &others {
+    for o in [pristine_app(), staged_app(), work_dir().join("previous/Didia.app")] {
         if o.exists() {
             let _ = run(lsr, &["-u", o.to_str().unwrap()]);
         }
@@ -662,15 +579,14 @@ pub fn make_default_browser(e: Edition) -> Result<String, String> {
     let _ = run(lsr, &["-f", path.to_str().unwrap()]);
     let out = Command::new(&helper).arg(&path).output().map_err(|e| e.to_string())?;
     let now = default_browser();
-    log(&format!("asked to make {} the default browser: now {}", e.name(), now.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
+    log(&format!("asked to make Didia the default browser: now {}", now.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
     if now.as_deref() == Some(path.as_path()) {
-        Ok(format!("{} is your default browser.", e.name()))
+        Ok("Didia is your default browser.".into())
     } else if out.status.code() == Some(3) {
         Err("macOS is still waiting for you to confirm the change in its dialog.".into())
     } else {
         Err(format!(
-            "{} isn't the default yet (links open {}). {}",
-            e.name(),
+            "Didia isn't the default yet (links open {}). {}",
             now.map(|p| p.display().to_string()).unwrap_or_else(|| "nothing".into()),
             String::from_utf8_lossy(&out.stderr).trim()
         ))
@@ -702,10 +618,6 @@ pub fn disable_background_updates() -> Result<(), String> {
     let _ = fs::remove_file(agent_plist());
     log("background updates off");
     Ok(())
-}
-
-pub fn last_check() -> Option<SystemTime> {
-    fs::metadata(work_dir().join("last_check")).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]

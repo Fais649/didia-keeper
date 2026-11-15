@@ -85,7 +85,7 @@ pub const ATLASSIAN_FLAGS: &[&str] = &[
     "onboarding-atlassian-step-enabled",
 ];
 
-/// Dia's paid-plan prompts: usage pricing, trials and upsells. Off with Dia's AI (Didia and Clia).
+/// Dia's paid-plan prompts: usage pricing, trials and upsells. Off together with Dia's AI.
 pub const PLAN_FLAGS: &[&str] = &[
     "dia-usage-pricing-enabled",
     "dia-session-cost-enabled",
@@ -110,26 +110,13 @@ pub struct HideRules {
     pub menu_items: Vec<&'static str>,
 }
 
-/// Dia's chat switches Clia keeps on: it reuses Dia's own Chat button and chat sidebar,
-/// with Claude inside instead of Dia's (plan-locked) chat.
-pub const CLIA_NATIVE_KEEP: &[&str] = &[];
-
-/// `native`: Clia's Claude lives in Dia's own chat button and sidebar, so those stay visible
-/// (the patch puts Claude where Dia's "View Plans" screen would be).
-pub fn hide_rules(ai: bool, atlassian: bool, native: bool) -> HideRules {
-    let mut r = HideRules {
-        labels: vec![],
-        label_prefixes: vec![],
-        label_containing: vec![],
-        view_classes: vec![],
-        menu_items: vec![],
-    };
-    if ai {
+pub fn hide_rules() -> HideRules {
+    HideRules {
         // Labels of Dia's AI buttons (accessibility labels seen in Dia 1.57).
-        r.labels.extend(["Chat", "Delete chat"]);
-        r.label_prefixes.extend(["Chat with this tab"]);
-        r.label_containing.extend(["when you have chat usage", "Personalization on for new chats"]);
-        r.view_classes.extend([
+        labels: vec!["Chat", "Delete chat"],
+        label_prefixes: vec!["Chat with this tab"],
+        label_containing: vec!["when you have chat usage", "Personalization on for new chats", "Atlassian"],
+        view_classes: vec![
             "AssistantCapabilitiesToolbarView",
             "AssistantPersonalityUI.PersonalizeButton",
             "NavigationBar.AssistantBarView",
@@ -142,73 +129,45 @@ pub fn hide_rules(ai: bool, atlassian: bool, native: bool) -> HideRules {
             "ContextBundleUpsell",
             "ConnectAppsUpsell",
             "AppsUpsellBar",
-        ]);
-        r.menu_items.extend(["Morning Brief", "Skills", "New Chat", "Ask on Page"]);
-        if native {
-            let keep = ["Chat", "Chat with this tab", "NavigationBar.AssistantBarView", "ChatUsageUpgradePlaceholder", "ChatUsageUpgradeButton", "New Chat"];
-            r.labels.retain(|l| !keep.contains(l));
-            r.label_prefixes.retain(|l| !keep.contains(l));
-            r.view_classes.retain(|l| !keep.contains(l));
-            r.menu_items.retain(|l| !keep.contains(l));
-        }
+            "AtlassianSeal",
+            "AtlassianFirstParty",
+        ],
+        menu_items: vec!["Morning Brief", "Skills", "New Chat", "Ask on Page"],
     }
-    if atlassian {
-        r.label_containing.extend(["Atlassian"]);
-        r.view_classes.extend(["AtlassianSeal", "AtlassianFirstParty"]);
-    }
-    r
 }
 
-pub fn flag_overrides(ai: bool, atlassian: bool, plan: bool, native: bool) -> String {
-    let mut names: Vec<&str> = vec![];
-    if ai {
-        names.extend(AI_FLAGS.iter().filter(|f| !(native && CLIA_NATIVE_KEEP.contains(f))));
-    }
-    if atlassian {
-        names.extend(ATLASSIAN_FLAGS);
-    }
-    if plan {
-        names.extend(PLAN_FLAGS);
-    }
+/// Dia's own feature switches (`flag=false|flag=false`) for AI, Atlassian and plan prompts.
+pub fn flag_overrides() -> String {
     let mut seen = std::collections::HashSet::new();
-    let mut parts: Vec<String> = names.into_iter().filter(|f| seen.insert(*f)).map(|f| format!("{f}=false")).collect();
-    if atlassian {
-        parts.push("atlassian-identity-signup-rollout-percentage=0".into());
-    }
+    let mut parts: Vec<String> = AI_FLAGS
+        .iter()
+        .chain(ATLASSIAN_FLAGS)
+        .chain(PLAN_FLAGS)
+        .filter(|f| seen.insert(**f))
+        .map(|f| format!("{f}=false"))
+        .collect();
+    parts.push("atlassian-identity-signup-rollout-percentage=0".into());
     parts.join("|")
 }
 
 /// DidiaPatch.plist, read by the patch inside the app when it starts.
-pub fn patch_config(s: &crate::keeper::Settings) -> plist::Value {
+pub fn patch_config(applescript_js: bool) -> plist::Value {
     use plist::{Dictionary, Value};
-    let (ai, atlassian, plan) = s.switches();
     let arr = |v: &[&str]| Value::Array(v.iter().map(|s| Value::String(s.to_string())).collect());
-    // Dia's chat button and sidebar stay off in Clia: they lead to Dia's plan screen.
-    let native = false;
-    let rules = hide_rules(ai, atlassian, native);
+    let rules = hide_rules();
     let mut defaults = Dictionary::new();
-    if ai {
-        // Dia reads page text for its AI; off when AI is removed.
-        defaults.insert("enablePageContentExtraction".into(), Value::Boolean(false));
-    }
-    let panel = s.edition == crate::keeper::Edition::Clia && s.own_claude;
+    // Dia reads page text for its AI; off, since the AI is off.
+    defaults.insert("enablePageContentExtraction".into(), Value::Boolean(false));
     let mut d = Dictionary::new();
-    d.insert("edition".into(), Value::String(s.edition.name().into()));
-    d.insert("flagOverrides".into(), Value::String(flag_overrides(ai, atlassian, plan, native)));
+    d.insert("flagOverrides".into(), Value::String(flag_overrides()));
     d.insert("defaults".into(), Value::Dictionary(defaults));
     d.insert("hideLabels".into(), arr(&rules.labels));
     d.insert("hideLabelPrefixes".into(), arr(&rules.label_prefixes));
     d.insert("hideLabelContaining".into(), arr(&rules.label_containing));
     d.insert("hideViewClasses".into(), arr(&rules.view_classes));
     d.insert("hideMenuItems".into(), arr(&rules.menu_items));
-    // The Claude panel reads the open page through Dia's AppleScript JavaScript support.
-    d.insert("appleScriptJavaScript".into(), Value::Boolean(s.applescript_js || panel));
-    d.insert("removeAI".into(), Value::Boolean(ai));
-    d.insert("removeAtlassian".into(), Value::Boolean(atlassian));
-    d.insert("claudePanel".into(), Value::Boolean(panel));
-    d.insert("dailyBrief".into(), Value::Boolean(panel && s.daily_brief));
-    if let Some(c) = crate::byo::local_claude() {
-        d.insert("claudePath".into(), Value::String(c.display().to_string()));
-    }
+    d.insert("appleScriptJavaScript".into(), Value::Boolean(applescript_js));
+    d.insert("removeAI".into(), Value::Boolean(true));
+    d.insert("removeAtlassian".into(), Value::Boolean(true));
     Value::Dictionary(d)
 }

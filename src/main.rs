@@ -1,95 +1,79 @@
-//! Didia Keeper: builds, from official Dia releases, and keeps up to date either
-//!   Didia: the Dia browser with its AI and Atlassian features switched off, or
-//!   Clia:  the same, plus a Claude panel (⇧⌘K) running your own Claude Code subscription.
+//! Didia Keeper: builds Didia (the official Dia browser with its AI and Atlassian features
+//! switched off) from official Dia releases, installs it as /Applications/Didia.app and
+//! keeps it up to date.
 //!
 //!   didia-keeper                 open the window
+//!   didia-keeper --rebuild       rebuild Didia from the official copy and install it
+//!   didia-keeper --update        check Dia's feed now and build a newer release if there is one
 //!   didia-keeper --background    what the background updater runs (every 10 minutes;
 //!                                it checks Dia's feed at most every 4 hours)
-//!   didia-keeper --update        check now and build a newer release if there is one
-//!   didia-keeper --rebuild       rebuild from the official copy with the current settings
-//!   didia-keeper --edition clia  (with the above) use this edition instead of the saved one
-//!   didia-keeper --select clia   save the edition to build (didia or clia)
 //!   didia-keeper --enable-updates  turn on automatic updates
-//!   didia-keeper --make-default didia  make Didia (or clia) the default web browser
-//!   didia-keeper --launch        build the chosen edition if needed, then open it (quitting the other)
+//!   didia-keeper --make-default  make Didia the default web browser
+//!   didia-keeper --launch        build Didia if needed, then open it
+//!   didia-keeper --help          this list
 //!   didia-keeper --screenshot F  draw about 120 frames, save the window to F (PNG), quit
-mod byo;
 mod flags;
 mod keeper;
 mod macho;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
-use keeper::{Edition, MadeBy, Progress, Settings, Shared};
+use keeper::{MadeBy, Progress, Settings, Shared};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Saved settings, with `--edition didia|clia` from the command line applied.
-fn settings_from_args(args: &[String]) -> Settings {
-    let mut s = Settings::load();
-    if let Some(e) = args.iter().position(|a| a == "--edition").and_then(|i| args.get(i + 1)) {
-        s.edition = if e.eq_ignore_ascii_case("clia") { Edition::Clia } else { Edition::Didia };
-    }
-    s
+const HELP: &str = "Didia Keeper: makes Didia (Dia without AI and Atlassian) and keeps it up to date.
+
+  didia-keeper                   open the window
+  didia-keeper --rebuild         rebuild Didia and install it
+  didia-keeper --update          check for a newer Dia now and build it
+  didia-keeper --background      what automatic updates run
+  didia-keeper --enable-updates  turn on automatic updates
+  didia-keeper --make-default    make Didia the default browser
+  didia-keeper --launch          build Didia if needed, then open it
+  didia-keeper --help            show this";
+
+fn fail(e: impl std::fmt::Display) -> ! {
+    eprintln!("{e}");
+    std::process::exit(1)
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let has = |f: &str| args.iter().any(|a| a == f);
-    if let Some(e) = args.iter().position(|a| a == "--select").and_then(|i| args.get(i + 1)) {
-        let mut s = Settings::load();
-        s.edition = if e.eq_ignore_ascii_case("clia") { Edition::Clia } else { Edition::Didia };
-        s.save();
-        keeper::log(&format!("switched to {}", s.edition.name()));
-        println!("edition: {}", s.edition.name());
-        let more = ["--make-default", "--enable-updates", "--background", "--update", "--rebuild", "--launch", "--build-to", "--screenshot"];
-        if !args.iter().any(|a| more.contains(&a.as_str())) {
-            return;
-        }
+    if has("--help") || has("-h") {
+        println!("{HELP}");
+        return;
     }
-    if let Some(i) = args.iter().position(|a| a == "--make-default") {
-        let e = match args.get(i + 1).map(|s| s.to_lowercase()) {
-            Some(s) if s == "clia" => Edition::Clia,
-            _ => Edition::Didia,
-        };
-        match keeper::make_default_browser(e) {
+    if has("--make-default") {
+        match keeper::make_default_browser() {
             Ok(m) => println!("{m}"),
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
         return;
     }
     if has("--enable-updates") {
         match keeper::enable_background_updates() {
             Ok(()) => println!("automatic updates on"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
     if has("--launch") {
-        let s = settings_from_args(&args);
+        let s = Settings::load();
         keeper::refresh_agent_copy();
         if !keeper::installed_matches(&s) {
-            let code = cli(s.clone(), true, false);
+            let code = cli(&s, true, false);
             if code != 0 {
                 std::process::exit(code);
             }
         }
-        if keeper::staged_app(s.edition).exists() {
-            if let Err(e) = keeper::quit_edition(s.edition).and_then(|_| keeper::install_staged(s.edition)) {
-                eprintln!("{e}");
-                std::process::exit(1);
+        if keeper::staged_app().exists() {
+            if let Err(e) = keeper::quit_didia().and_then(|_| keeper::install_staged()) {
+                fail(e);
             }
         }
-        match keeper::open_edition(s.edition) {
+        match keeper::open_didia() {
             Ok(m) => println!("{m}"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
         return;
     }
@@ -97,24 +81,20 @@ fn main() {
         if !has("--background") {
             keeper::refresh_agent_copy();
         }
-        std::process::exit(cli(settings_from_args(&args), has("--rebuild"), has("--update")));
+        std::process::exit(cli(&Settings::load(), has("--rebuild"), has("--update")));
     }
-    // Testing aid: build the edition from <official Dia.app> into <folder> without installing it.
+    // Testing aid: build Didia from <official Dia.app> into <folder> without installing it.
     if let Some(i) = args.iter().position(|a| a == "--build-to") {
         let (Some(src), Some(dir)) = (args.get(i + 1), args.get(i + 2)) else {
             eprintln!("usage: --build-to <official Dia.app> <folder>");
             std::process::exit(2);
         };
-        let s = settings_from_args(&args);
-        let dest = Path::new(dir).join(format!("{}.app", s.edition.name()));
+        let dest = Path::new(dir).join("Didia.app");
         let r = keeper::verify_official(Path::new(src))
-            .and_then(|_| keeper::build_edition(Path::new(src), &dest, &s, &None));
+            .and_then(|_| keeper::build_didia(Path::new(src), &dest, &Settings::load(), &None));
         match r {
             Ok(()) => println!("built {}", dest.display()),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
         return;
     }
@@ -126,11 +106,11 @@ fn main() {
     run_window(screenshot);
 }
 
-fn cli(s: Settings, rebuild: bool, force: bool) -> i32 {
+fn cli(s: &Settings, rebuild: bool, force: bool) -> i32 {
     let Some(_lock) = keeper::Lock::take() else {
         return 0; // the window (or another check) is already building
     };
-    let r = if rebuild { keeper::rebuild_and_install(&s, &None) } else { keeper::check_and_update(force, &s, &None) };
+    let r = if rebuild { keeper::rebuild_and_install(s, &None) } else { keeper::check_and_update(force, s, &None) };
     match r {
         Ok(msg) => {
             println!("{msg}");
@@ -148,8 +128,8 @@ fn run_window(screenshot: Option<PathBuf>) {
     let quiet = screenshot.is_some();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Didia Keeper")
-        .with_inner_size([780.0, 700.0])
-        .with_min_inner_size([620.0, 520.0]);
+        .with_inner_size([520.0, 600.0])
+        .with_min_inner_size([460.0, 520.0]);
     if quiet {
         viewport = viewport.with_active(false);
         #[cfg(target_os = "windows")]
@@ -211,64 +191,58 @@ fn style(ctx: &egui::Context) {
 
 struct Snapshot {
     installed: Option<keeper::AppInfo>,
-    pristine: Option<keeper::AppInfo>,
     original: Option<(PathBuf, keeper::AppInfo)>,
+    pristine: Option<keeper::AppInfo>,
     staged: Option<keeper::AppInfo>,
     agent_on: bool,
     running: bool,
-    other_running: bool,
-    claude: Option<String>,
     default_browser: Option<PathBuf>,
-    last_check: Option<std::time::SystemTime>,
-    log: Vec<String>,
+    last_log: Option<String>,
 }
 
 impl Snapshot {
-    fn read(e: Edition) -> Self {
+    fn read() -> Self {
         Snapshot {
-            installed: keeper::app_info(&e.install_path()),
-            pristine: keeper::app_info(&keeper::pristine_app()),
+            installed: keeper::app_info(&keeper::install_path()),
             original: keeper::official_dia_on_mac(),
-            staged: keeper::app_info(&keeper::staged_app(e)),
+            pristine: keeper::app_info(&keeper::pristine_app()),
+            staged: keeper::app_info(&keeper::staged_app()),
             agent_on: keeper::agent_installed(),
-            running: keeper::is_running(e),
-            other_running: keeper::is_running(e.other()),
-            claude: byo::claude_version(),
+            running: keeper::is_running(),
             default_browser: keeper::default_browser(),
-            last_check: keeper::last_check(),
-            log: keeper::log_tail(40),
+            last_log: keeper::log_tail(1).pop(),
         }
     }
 }
 
 struct KeeperApp {
     settings: Settings,
-
     snap: Snapshot,
     snap_age: f64,
     progress: Shared,
-    show_ai_list: bool,
-    show_atl_list: bool,
     screenshot: Option<PathBuf>,
     frames: u32,
     shot_requested: bool,
 }
 
+#[derive(Clone, Copy)]
+enum Job {
+    Peek,
+    Rebuild,
+    Install,
+    MakeDefault,
+}
+
 impl KeeperApp {
     fn new(screenshot: Option<PathBuf>) -> Self {
-        let settings = Settings::load();
         if screenshot.is_none() {
             keeper::refresh_agent_copy();
         }
-        let snap = Snapshot::read(settings.edition);
         let app = KeeperApp {
-            settings,
-
-            snap,
+            settings: Settings::load(),
+            snap: Snapshot::read(),
             snap_age: 0.0,
             progress: Arc::new(Mutex::new(Progress::default())),
-            show_ai_list: false,
-            show_atl_list: false,
             screenshot,
             frames: 0,
             shot_requested: false,
@@ -287,6 +261,7 @@ impl KeeperApp {
             }
             g.busy = true;
             g.error = None;
+            g.last_result = None;
             g.step = "Starting".into();
             g.fraction = None;
         }
@@ -299,18 +274,13 @@ impl KeeperApp {
                     String::new()
                 }),
                 _ => match keeper::Lock::take() {
-                    None => Err("A background update is running; try again in a few minutes.".into()),
-                    Some(_lock) => {
-                        let sp = Some(p.clone());
-                        match job {
-                            Job::Update => keeper::check_and_update(true, &s, &sp),
-                            Job::Rebuild => keeper::rebuild_and_install(&s, &sp),
-                            Job::Install => keeper::install_staged(s.edition).map(|v| format!("{} {v} is installed.", s.edition.name())),
-                            Job::Open => keeper::open_edition(s.edition),
-                            Job::MakeDefault => keeper::make_default_browser(s.edition),
-                            Job::Peek => unreachable!(),
-                        }
-                    }
+                    None => Err("An automatic update is running; try again in a few minutes.".into()),
+                    Some(_lock) => match job {
+                        Job::Rebuild => keeper::rebuild_and_install(&s, &Some(p.clone())),
+                        Job::Install => keeper::install_staged().map(|v| format!("Didia {v} is installed.")),
+                        Job::MakeDefault => keeper::make_default_browser(),
+                        Job::Peek => unreachable!(),
+                    },
                 },
             };
             let mut g = p.lock().unwrap();
@@ -326,16 +296,6 @@ impl KeeperApp {
             }
         });
     }
-}
-
-#[derive(Clone, Copy)]
-enum Job {
-    Peek,
-    Update,
-    Rebuild,
-    Install,
-    Open,
-    MakeDefault,
 }
 
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -359,23 +319,13 @@ fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
         .show(ui, |ui| ui.label(RichText::new(text).color(color).size(12.5).strong()));
 }
 
-fn ago(t: std::time::SystemTime) -> String {
-    let s = std::time::SystemTime::now().duration_since(t).map(|d| d.as_secs()).unwrap_or(0);
-    match s {
-        0..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", s / 60),
-        3600..=86399 => format!("{} h ago", s / 3600),
-        _ => format!("{} days ago", s / 86400),
-    }
-}
-
 impl eframe::App for KeeperApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         let now = ctx.input(|i| i.time);
         if now - self.snap_age > 2.0 {
-            self.snap = Snapshot::read(self.settings.edition);
+            self.snap = Snapshot::read();
             self.snap_age = now;
         }
         let prog = self.progress.lock().unwrap().clone();
@@ -385,13 +335,7 @@ impl eframe::App for KeeperApp {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 self.header(ui);
                 self.status_card(ui, &prog);
-                self.edition_card(ui);
-                self.updates_card(ui);
-                match self.settings.edition {
-                    Edition::Didia => self.removed_card(ui),
-                    Edition::Clia => self.clia_card(ui),
-                }
-                self.activity_card(ui);
+                self.options_card(ui);
             });
         });
     }
@@ -434,10 +378,7 @@ impl KeeperApp {
             p.circle_filled(rect.center(), 6.0, Color32::WHITE);
             ui.vertical(|ui| {
                 ui.label(RichText::new("Didia Keeper").heading().strong());
-                ui.label(
-                    RichText::new("Dia without the bloat, rebuilt from every official release: no AI at all, or your own Claude instead of Dia's.")
-                        .color(MUTED),
-                );
+                ui.label(RichText::new("Dia without the AI. Made from the official Dia and kept up to date.").color(MUTED));
             });
         });
         ui.add_space(14.0);
@@ -445,20 +386,19 @@ impl KeeperApp {
 
     fn status_card(&mut self, ui: &mut egui::Ui, prog: &Progress) {
         let snap = &self.snap;
-        let name = self.settings.edition.name();
-        let pending = self.pending_rebuild();
+        let installed = snap.installed.as_ref();
+        let latest = prog.latest.as_ref();
+        let outdated = installed.zip(latest).map(|(i, l)| l.build > i.build).unwrap_or(false);
+        let needs_rebuild = installed.map(|i| !matches!(i.made_by, MadeBy::Keeper { .. })).unwrap_or(false)
+            || (installed.is_some() && !keeper::installed_matches(&self.settings));
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("Your {name}")).size(17.0).strong());
+                ui.label(RichText::new("Didia").size(17.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let latest = prog.latest.as_ref().map(|r| r.build);
-                    let inst = snap.installed.as_ref();
-                    let (text, color) = match inst {
-                        None => ("Not installed", BAD),
-                        Some(i) if !matches!(i.made_by, MadeBy::Keeper { .. }) || pending => ("Needs a rebuild", WARN),
-                        Some(i) if latest.map(|l| l > i.build).unwrap_or(false) => ("Update available", WARN),
-                        Some(_) if latest.is_some() => ("Up to date", GOOD),
-                        Some(_) => ("Installed", GOOD),
+                    let (text, color) = match installed {
+                        None => ("Not built yet", BAD),
+                        Some(_) if needs_rebuild || outdated => ("Update available", WARN),
+                        Some(_) => ("Up to date", GOOD),
                     };
                     pill(ui, text, color);
                     if snap.running {
@@ -468,53 +408,24 @@ impl KeeperApp {
             });
             ui.add_space(4.0);
             egui::Grid::new("status").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                ui.label(RichText::new("Installed").color(MUTED));
-                ui.label(match &snap.installed {
-                    Some(i) => format!("{name} {}  (build {})", i.version, i.build),
-                    None => "—".into(),
+                ui.label(RichText::new("Dia version found").color(MUTED));
+                ui.label(match (&snap.original, &snap.pristine, latest) {
+                    (Some((_, i)), _, _) => format!("{} (on this Mac)", i.version),
+                    (None, Some(i), _) => format!("{} (kept copy)", i.version),
+                    (None, None, Some(r)) => format!("{} (newest official)", r.version),
+                    _ if prog.busy => "checking…".into(),
+                    _ => "none on this Mac; it will be downloaded".into(),
                 });
                 ui.end_row();
-                ui.label(RichText::new("Made by").color(MUTED));
-                ui.label(match snap.installed.as_ref().map(|i| &i.made_by) {
-                    Some(MadeBy::Keeper { own_claude: true, .. }) => "Didia Keeper — Dia's AI and Atlassian off, Claude panel on your own Claude Code".into(),
-                    Some(MadeBy::Keeper { ai_off, atlassian_off, .. }) => format!(
-                        "Didia Keeper — AI {}, Atlassian {}",
-                        if *ai_off { "off" } else { "on" },
-                        if *atlassian_off { "off" } else { "on" }
-                    ),
-                    Some(MadeBy::Official) => "plain official Dia".into(),
-                    _ => "another tool (rebuild to switch AI and Atlassian off)".into(),
-                });
-                ui.end_row();
-                ui.label(RichText::new("Newest official Dia").color(MUTED));
-                ui.label(match &prog.latest {
-                    Some(r) => format!("{}  (build {})", r.version, r.build),
-                    None if prog.busy => "checking…".into(),
-                    None => "not checked yet".into(),
-                });
-                ui.end_row();
-                ui.label(RichText::new("Official copy kept").color(MUTED));
-                ui.label(match &snap.pristine {
-                    Some(i) => format!("Dia {} — signature checked", i.version),
-                    None => "none yet (made on first build)".into(),
-                });
-                ui.end_row();
-                ui.label(RichText::new("Original Dia app").color(MUTED));
-                ui.label(match &snap.original {
-                    Some((path, i)) => format!("Dia {} at {} — used as the source, left untouched", i.version, path.display()),
-                    None => "not on this Mac — official releases are downloaded instead".into(),
-                });
-                ui.end_row();
-                ui.label(RichText::new("Default browser").color(MUTED));
-                ui.label(match &snap.default_browser {
-                    Some(p) if *p == self.settings.edition.install_path() => format!("{name} ✓"),
-                    Some(p) => p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                ui.label(RichText::new("Didia installed").color(MUTED));
+                ui.label(match installed {
+                    Some(i) => i.version.clone(),
                     None => "—".into(),
                 });
                 ui.end_row();
                 if let Some(s) = &snap.staged {
                     ui.label(RichText::new("Waiting to install").color(MUTED));
-                    ui.label(RichText::new(format!("{name} {} — installs when {name} is closed", s.version)).color(WARN));
+                    ui.label(RichText::new(format!("{} — installs when you quit Didia", s.version)).color(WARN));
                     ui.end_row();
                 }
             });
@@ -529,99 +440,62 @@ impl KeeperApp {
                 }
             } else {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Check for updates").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                        self.start(Job::Update);
-                    }
-                    if ui.button(format!("Rebuild {name} now")).on_hover_text("Rebuild from the official copy with the settings below").clicked() {
+                    let label = if installed.is_some() { "Rebuild now" } else { "Build Didia" };
+                    if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT)).clicked() {
                         self.start(Job::Rebuild);
                     }
                     if snap.staged.is_some() && !snap.running && ui.button("Install now").clicked() {
                         self.start(Job::Install);
                     }
-                    let is_default = snap.default_browser.as_deref() == Some(self.settings.edition.install_path().as_path());
-                    if snap.installed.is_some() && !is_default && ui.button("Make default browser").on_hover_text("macOS asks you to confirm").clicked() {
-                        self.start(Job::MakeDefault);
-                    }
-                    if snap.installed.is_some() && ui.button(format!("Open {name}")).clicked() {
-                        self.start(Job::Open);
-                    }
                 });
             }
-            if snap.other_running {
-                let other = self.settings.edition.other().name();
-                ui.label(RichText::new(format!("{other} is open. Both share Dia's profile, so “Open {name}” quits {other} first (its windows come back next time).")).color(WARN));
-            }
+            // One short line: the problem, the last result, or the last log entry.
+            ui.add_space(2.0);
             if let Some(e) = &prog.error {
                 ui.label(RichText::new(e).color(BAD));
             } else if let Some(m) = &prog.last_result {
                 ui.label(RichText::new(m).color(GOOD));
+            } else if let Some(l) = &snap.last_log {
+                ui.label(RichText::new(l).monospace().size(11.5).color(MUTED));
             }
         });
     }
 
-    fn removed_card(&mut self, ui: &mut egui::Ui) {
+    fn options_card(&mut self, ui: &mut egui::Ui) {
+        let mut toggle = None;
+        let mut make_default = false;
         let mut changed = false;
+        let snap = &self.snap;
+        let is_default = snap.default_browser.as_deref() == Some(keeper::install_path().as_path());
+        let installed = snap.installed.is_some();
         card(ui, |ui| {
-            ui.label(RichText::new("What's taken out").size(17.0).strong());
-            ui.label(RichText::new("Always, in every Didia build: Dia's own feature switches turn these off, and any button that still shows is hidden.").color(MUTED));
-            ui.add_space(6.0);
-            ui.label(RichText::new("✓  AI features").strong());
-            ui.indent("ai", |ui| {
-                ui.label(RichText::new("The Chat button and “Chat with this tab”, the chat sidebar, Ask on page, Skills, agents and browse-for-me, Morning Brief, memory and personalization, AI tab clean-up and renaming, AI upsells, trials and plan prompts.").color(MUTED));
-                let label = if self.show_ai_list { "Hide the switches" } else { "Show the switches" };
-                if ui.link(label).clicked() {
-                    self.show_ai_list = !self.show_ai_list;
-                }
-                if self.show_ai_list {
-                    ui.label(RichText::new(flags::AI_FLAGS.join(", ")).monospace().size(11.5).color(MUTED));
-                }
-            });
-            ui.add_space(4.0);
-            ui.label(RichText::new("✓  Atlassian").strong());
-            ui.indent("atl", |ui| {
-                ui.label(RichText::new("Atlassian sign-in and sign-up, Jira and Confluence connections, Atlassian tools and onboarding step, Atlassian account buttons.").color(MUTED));
-                let label = if self.show_atl_list { "Hide the switches" } else { "Show the switches" };
-                if ui.link(label).clicked() {
-                    self.show_atl_list = !self.show_atl_list;
-                }
-                if self.show_atl_list {
-                    ui.label(RichText::new(flags::ATLASSIAN_FLAGS.join(", ") + ", atlassian-identity-signup-rollout-percentage").monospace().size(11.5).color(MUTED));
+            let mut on = snap.agent_on;
+            if ui.checkbox(&mut on, RichText::new("Automatic updates").strong()).changed() {
+                toggle = Some(on);
+            }
+            ui.label(RichText::new("When Dia has a new version, Didia is rebuilt from it and installed the next time you quit Didia.").color(MUTED));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if is_default {
+                    pill(ui, "Didia is your default browser", GOOD);
+                } else if ui.add_enabled(installed, egui::Button::new("Make default browser")).on_hover_text("macOS asks you to confirm").clicked() {
+                    make_default = true;
                 }
             });
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             changed |= ui
-                .checkbox(&mut self.settings.applescript_js, "Allow JavaScript from AppleScript (only needed for automation tools)")
+                .checkbox(&mut self.settings.applescript_js, "Allow JavaScript from AppleScript (for automation tools)")
                 .changed();
-            if self.pending_rebuild() {
-                ui.add_space(4.0);
-                ui.label(RichText::new("Press “Rebuild Didia now” to apply these choices.").color(WARN));
+            if changed {
+                ui.label(RichText::new("Press “Rebuild now” to apply this.").color(WARN));
             }
         });
         if changed {
             self.settings.save();
         }
-    }
-
-    fn updates_card(&mut self, ui: &mut egui::Ui) {
-        let snap = &self.snap;
-        let mut toggle = None;
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Automatic updates").size(17.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut on = snap.agent_on;
-                    let text = if on { "On" } else { "Off" };
-                    if ui.add(egui::Checkbox::new(&mut on, text)).changed() {
-                        toggle = Some(on);
-                    }
-                });
-            });
-            let name = self.settings.edition.name();
-            ui.label(RichText::new(format!("Checks Dia's official release feed every 4 hours, downloads new releases, refuses anything not signed by The Browser Company, rebuilds {name} and installs it the next time {name} is closed.")).color(MUTED));
-            if let Some(t) = snap.last_check {
-                ui.label(RichText::new(format!("Last checked {}", ago(t))).color(MUTED).size(12.5));
-            }
-        });
+        if make_default {
+            self.start(Job::MakeDefault);
+        }
         match toggle {
             Some(true) => {
                 if let Err(e) = keeper::enable_background_updates() {
@@ -635,114 +509,5 @@ impl KeeperApp {
             }
             None => {}
         }
-    }
-
-    /// The installed app was built with different choices than the ones now set.
-    fn pending_rebuild(&self) -> bool {
-        let s = &self.settings;
-        let (ai, atl, _) = s.switches();
-        match self.snap.installed.as_ref().map(|i| &i.made_by) {
-            Some(MadeBy::Keeper { ai_off, atlassian_off, own_claude, .. }) => {
-                *ai_off != ai || *atlassian_off != atl || *own_claude != (s.edition == Edition::Clia && s.own_claude)
-            }
-            Some(_) => true,
-            None => false,
-        }
-    }
-
-    fn edition_card(&mut self, ui: &mut egui::Ui) {
-        let mut pick = None;
-        card(ui, |ui| {
-            ui.label(RichText::new("Which browser").size(17.0).strong());
-            ui.add_space(2.0);
-            ui.columns(2, |cols| {
-                for (col, e, title, text) in [
-                    (0, Edition::Didia, "Didia", "No AI at all. Chat, agents, Morning Brief and Atlassian are switched off."),
-                    (1, Edition::Clia, "Clia", "No Dia AI or paywalls: a Claude panel (⇧⌘K) on your own Claude Code subscription instead. No Atlassian."),
-                ] {
-                    let ui = &mut cols[col];
-                    let on = self.settings.edition == e;
-                    let r = egui::Frame::new()
-                        .fill(if on { ACCENT.gamma_multiply(0.10) } else { BG })
-                        .stroke(Stroke::new(if on { 2.0 } else { 1.0 }, if on { ACCENT } else { Color32::from_rgb(225, 223, 233) }))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(egui::Margin::same(14))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(title).size(16.0).strong().color(if on { ACCENT } else { INK }));
-                                if on {
-                                    ui.label(RichText::new("selected").size(12.0).color(ACCENT));
-                                }
-                            });
-                            ui.label(RichText::new(text).color(MUTED));
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
-                        pick = Some(e);
-                    }
-                }
-            });
-            ui.label(
-                RichText::new("Both are made from the same official Dia and share its profile, so your tabs and logins carry over. Use one at a time.")
-                    .color(MUTED)
-                    .size(12.5),
-            );
-        });
-        if let Some(e) = pick {
-            self.settings.edition = e;
-            self.settings.save();
-            keeper::log(&format!("switched to {}", e.name()));
-            self.snap = Snapshot::read(e);
-        }
-    }
-
-    fn clia_card(&mut self, ui: &mut egui::Ui) {
-        let mut changed = false;
-        card(ui, |ui| {
-            ui.label(RichText::new("Claude").size(17.0).strong());
-            ui.label(RichText::new("Dia's own AI is switched off in Clia, with its plan prompts and Atlassian. In its place: a Claude button where Dia's Chat button sits, opening a Claude sidebar (⇧⌘K) in your window's colours. It answers with the Claude Code on this Mac, on your own Claude subscription.").color(MUTED));
-            ui.add_space(4.0);
-            changed |= ui.checkbox(&mut self.settings.own_claude, RichText::new("Claude sidebar").strong()).changed();
-            ui.indent("cc", |ui| {
-                ui.label(RichText::new("Reads the tab you're on, and the apps connected to your Claude account (Gmail, Calendar, Slack, Notion…), never Atlassian.").color(MUTED));
-                changed |= ui.checkbox(&mut self.settings.daily_brief, "Daily brief: each morning, Claude sums up your calendar, email, messages and tasks").changed();
-                match &self.snap.claude {
-                    Some(v) => {
-                        ui.horizontal(|ui| {
-                            pill(ui, "Claude Code found", GOOD);
-                            ui.label(RichText::new(v).color(MUTED));
-                        });
-                    }
-                    None => {
-                        pill(ui, "Claude Code not found", WARN);
-                        ui.label(RichText::new("Install Claude Code from claude.com/code and sign in once (run `claude` in Terminal).").color(MUTED));
-                    }
-                }
-            });
-            if self.pending_rebuild() {
-                ui.label(RichText::new("Press “Rebuild Clia now” to apply these choices.").color(WARN));
-            }
-        });
-        if changed {
-            self.settings.save();
-        }
-    }
-
-    fn activity_card(&self, ui: &mut egui::Ui) {
-        card(ui, |ui| {
-            ui.label(RichText::new("Activity").size(17.0).strong());
-            if self.snap.log.is_empty() {
-                ui.label(RichText::new("Nothing yet.").color(MUTED));
-            }
-            egui::ScrollArea::vertical().max_height(150.0).stick_to_bottom(true).show(ui, |ui| {
-                for l in &self.snap.log {
-                    ui.label(RichText::new(l).monospace().size(11.5).color(MUTED));
-                }
-            });
-        });
     }
 }
