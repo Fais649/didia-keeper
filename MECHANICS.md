@@ -52,29 +52,36 @@ Didia Keeper makes it from an official copy and keeps it current.
 
   Page content views (`RenderWidgetHostView*`, `WebContents*`) are never touched.
 
-## Clia: Dia's agent on your own Claude (found in the Dia app bundle)
-- Dia ships `Resources/agent-server-resources/dist/`, which holds `agent-server` and `handler`
-  (Bun programs; their source maps `*.map` contain the source) and `claude` (Claude Code 2.1.310).
-- At start-up, `agent-server` sets `ANTHROPIC_AUTH_TOKEN=sk-<random>`, `CLAUDE_CODE_USE_VERTEX=1`,
-  `CLAUDE_CODE_SKIP_VERTEX_AUTH=1`, `ANTHROPIC_VERTEX_PROJECT_ID=agent-server` and
-  `CLOUD_ML_REGION=us-central1`. Claude Code's model calls go to Dia's gateway on localhost.
-- `handler` runs `APP_BUNDLE/claude` (or `CLAUDE_CODE_EXECUTABLE`) under
-  `/usr/bin/sandbox-exec -f agent-claude-code.sb`, with the parameters `CONTEXT_DIR`, `APP_BUNDLE`,
-  `BIN_DIR`, `AGENT_TMPDIR` and `GATEWAY_PORT`.
-- The profile denies by default. It allows exec of `BIN_DIR/claude`, `/bin/sh` and a few tools,
-  reading under `BIN_DIR`, and network only to `localhost:GATEWAY_PORT`.
-- Clia (`src/byo.rs`):
-  - renames `claude` → `claude-dia`;
-  - writes a POSIX-sh launcher `claude` (shell built-ins only) that reads the token file into
-    `CLAUDE_CODE_OAUTH_TOKEN`, unsets the Vertex/gateway variables, rewrites model ids
-    `name@date` → `name-date`, and runs `claude-dia`;
-  - appends sandbox rules: exec `claude-dia`, read the token file, outbound TCP `*:443`, and
-    `/private/var/run/mDNSResponder`.
-- Checked:
-  - the launcher run outside the sandbox (token set, Vertex variables unset, model id rewritten);
-  - under `sandbox-exec`, the launcher → `claude-dia` exec chain works;
-  - the Clia app passes `codesign --verify --deep --strict`.
-- Not yet seen: a real Dia agent turn running on the person's subscription.
+## Clia: a Claude panel on the person's own Claude Code
+- Dia's chat is gated by Dia's plan: a "View Plans" screen ("Title shown to unpaid users when chat
+  is unavailable", `WebSupertabController`, `ChatUsageUpgradePlaceholderViewController`). Clia
+  doesn't touch that gate. It switches Dia's AI off like Didia does, and hides those upsell views.
+- The panel lives in `patch/didia_patch.m` (`CliaPanel`):
+  - It adds a "Claude" menu (⇧⌘K) and an NSPanel next to the browser window.
+  - It reads the page with `osascript` → Dia's `execute <tab> javascript` (the Dia.sdef command
+    `CrSuExJa`), which needs `--enable-applescript-javascript`, getting the URL, the title and
+    `document.body.innerText` (first 40 000 characters).
+  - It runs `claude -p --output-format json --append-system-prompt … --allowedTools WebFetch,WebSearch
+    [--resume <session_id>]` with the prompt on stdin. `ANTHROPIC_*` and `CLAUDE_CODE_*` variables
+    are removed so the signed-in subscription is used. It runs in
+    `~/Library/Application Support/Clia/Claude`.
+- Self-test (2026-11-15): in the installed Clia, a test question about the open tab came back from
+  Claude Code in about 30 s, with the page read (log line "clia: answered (237 chars, page read)").
+
+## Clia sidebar, daily brief and connected apps
+- Dia's own sidebar (view tree read inside Clia): `AssistantSidebarViewController` RootView holds the page
+  container and a 480 pt panel at the right edge (`AssistantPanelRootView`). Its header has
+  30×30 icon buttons on the right, and it sits on the window's theme background
+  (`WindowBackgroundOverlayTintView` → `BackgroundColorView` + `GradientView`).
+- Clia's own sidebar copies that look: the right edge, full height, the window's theme colour and
+  gradient layers copied, the same icon header, a serif empty-state title and a rounded composer. Dia's
+  chat stays switched off; a leftover open Dia chat panel is closed when Claude opens.
+- Connected apps: `claude mcp list` is parsed (`name: url - status`); the tool prefix is `mcp__` + the name
+  with non-alphanumerics turned into `_` (e.g. `mcp__claude_ai_Gmail`). Atlassian is skipped and also disallowed.
+- Daily brief: `claude -p` with a read-only brief prompt, cached as
+  `~/Library/Application Support/Clia/brief-YYYY-MM-DD.md`. It is made in the background after 05:00.
+- Self-test 2026-11-15: brief made from Gmail, Slack, Drive and Notion (1974 characters). A Google Calendar
+  question failed because that connector isn't authorized in the person's Claude account.
 
 ## Atlassian in Dia (strings in the Dia program)
 `AtlassianSessionCookieController`, `AtlassianFirstPartyOnboarding*`, `AtlassianMCPCredentials`,

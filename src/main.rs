@@ -1,6 +1,6 @@
 //! Didia Keeper: builds, from official Dia releases, and keeps up to date either
 //!   Didia: the Dia browser with its AI and Atlassian features switched off, or
-//!   Clia:  Dia's AI kept, Atlassian removed, Dia's agent run on your own Claude subscription.
+//!   Clia:  the same, plus a Claude panel (⇧⌘K) running your own Claude Code subscription.
 //!
 //!   didia-keeper                 open the window
 //!   didia-keeper --background    what the background updater runs (every 10 minutes;
@@ -9,8 +9,8 @@
 //!   didia-keeper --rebuild       rebuild from the official copy with the current settings
 //!   didia-keeper --edition clia  (with the above) use this edition instead of the saved one
 //!   didia-keeper --select clia   save the edition to build (didia or clia)
-//!   didia-keeper --connect-claude  sign in with `claude setup-token` in Terminal and save the token
 //!   didia-keeper --enable-updates  turn on automatic updates
+//!   didia-keeper --launch        build the chosen edition if needed, then open it (quitting the other)
 //!   didia-keeper --screenshot F  draw about 120 frames, save the window to F (PNG), quit
 mod byo;
 mod flags;
@@ -41,9 +41,6 @@ fn main() {
         keeper::log(&format!("switched to {}", s.edition.name()));
         println!("edition: {}", s.edition.name());
     }
-    if has("--connect-claude") {
-        std::process::exit(connect_claude());
-    }
     if has("--enable-updates") {
         match keeper::enable_background_updates() {
             Ok(()) => println!("automatic updates on"),
@@ -52,6 +49,30 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    if has("--launch") {
+        let s = settings_from_args(&args);
+        keeper::refresh_agent_copy();
+        if !keeper::installed_matches(&s) {
+            let code = cli(s.clone(), true, false);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        if keeper::staged_app(s.edition).exists() {
+            if let Err(e) = keeper::quit_edition(s.edition).and_then(|_| keeper::install_staged(s.edition)) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        match keeper::open_edition(s.edition) {
+            Ok(m) => println!("{m}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
     }
     if has("--background") || has("--update") || has("--rebuild") {
         if !has("--background") {
@@ -84,24 +105,6 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
     run_window(screenshot);
-}
-
-/// Open Terminal with `claude setup-token` and wait (up to 10 minutes) for the token.
-fn connect_claude() -> i32 {
-    if let Err(e) = byo::start_setup_token() {
-        eprintln!("{e}");
-        return 1;
-    }
-    println!("Terminal opened: sign in with your Claude subscription there.");
-    for _ in 0..600 {
-        if byo::collect_setup_token().is_some() {
-            println!("Claude connected.");
-            return 0;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    eprintln!("No token yet. Paste it into Didia Keeper when you have it.");
-    1
 }
 
 fn cli(s: Settings, rebuild: bool, force: bool) -> i32 {
@@ -195,16 +198,13 @@ struct Snapshot {
     agent_on: bool,
     running: bool,
     other_running: bool,
-    has_token: bool,
+    claude: Option<String>,
     last_check: Option<std::time::SystemTime>,
     log: Vec<String>,
 }
 
 impl Snapshot {
     fn read(e: Edition) -> Self {
-        if !byo::has_token() && byo::setup_transcript().exists() {
-            byo::collect_setup_token();
-        }
         Snapshot {
             installed: keeper::app_info(&e.install_path()),
             pristine: keeper::app_info(&keeper::pristine_app()),
@@ -213,7 +213,7 @@ impl Snapshot {
             agent_on: keeper::agent_installed(),
             running: keeper::is_running(e),
             other_running: keeper::is_running(e.other()),
-            has_token: byo::has_token(),
+            claude: byo::claude_version(),
             last_check: keeper::last_check(),
             log: keeper::log_tail(40),
         }
@@ -222,7 +222,7 @@ impl Snapshot {
 
 struct KeeperApp {
     settings: Settings,
-    token_input: String,
+
     snap: Snapshot,
     snap_age: f64,
     progress: Shared,
@@ -242,7 +242,7 @@ impl KeeperApp {
         let snap = Snapshot::read(settings.edition);
         let app = KeeperApp {
             settings,
-            token_input: String::new(),
+
             snap,
             snap_age: 0.0,
             progress: Arc::new(Mutex::new(Progress::default())),
@@ -285,6 +285,7 @@ impl KeeperApp {
                             Job::Update => keeper::check_and_update(true, &s, &sp),
                             Job::Rebuild => keeper::rebuild_and_install(&s, &sp),
                             Job::Install => keeper::install_staged(s.edition).map(|v| format!("{} {v} is installed.", s.edition.name())),
+                            Job::Open => keeper::open_edition(s.edition),
                             Job::Peek => unreachable!(),
                         }
                     }
@@ -311,6 +312,7 @@ enum Job {
     Update,
     Rebuild,
     Install,
+    Open,
 }
 
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -451,7 +453,7 @@ impl KeeperApp {
                 ui.end_row();
                 ui.label(RichText::new("Made by").color(MUTED));
                 ui.label(match snap.installed.as_ref().map(|i| &i.made_by) {
-                    Some(MadeBy::Keeper { own_claude: true, .. }) => "Didia Keeper — AI on your own Claude, Atlassian off".into(),
+                    Some(MadeBy::Keeper { own_claude: true, .. }) => "Didia Keeper — Dia's AI and Atlassian off, Claude panel on your own Claude Code".into(),
                     Some(MadeBy::Keeper { ai_off, atlassian_off, .. }) => format!(
                         "Didia Keeper — AI {}, Atlassian {}",
                         if *ai_off { "off" } else { "on" },
@@ -507,13 +509,13 @@ impl KeeperApp {
                         self.start(Job::Install);
                     }
                     if snap.installed.is_some() && ui.button(format!("Open {name}")).clicked() {
-                        let _ = std::process::Command::new("/usr/bin/open").arg(self.settings.edition.install_path()).spawn();
+                        self.start(Job::Open);
                     }
                 });
             }
             if snap.other_running {
                 let other = self.settings.edition.other().name();
-                ui.label(RichText::new(format!("{other} is open. Both share Dia's profile, so quit {other} before opening {name}.")).color(WARN));
+                ui.label(RichText::new(format!("{other} is open. Both share Dia's profile, so “Open {name}” quits {other} first (its windows come back next time).")).color(WARN));
             }
             if let Some(e) = &prog.error {
                 ui.label(RichText::new(e).color(BAD));
@@ -622,7 +624,7 @@ impl KeeperApp {
             ui.columns(2, |cols| {
                 for (col, e, title, text) in [
                     (0, Edition::Didia, "Didia", "No AI at all. Chat, agents, Morning Brief and Atlassian are switched off."),
-                    (1, Edition::Clia, "Clia", "Dia's AI on your own Claude subscription. Atlassian removed, no Dia plan prompts."),
+                    (1, Edition::Clia, "Clia", "No Dia AI or paywalls: a Claude panel (⇧⌘K) on your own Claude Code subscription instead. No Atlassian."),
                 ] {
                     let ui = &mut cols[col];
                     let on = self.settings.edition == e;
@@ -666,63 +668,33 @@ impl KeeperApp {
 
     fn clia_card(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
-        let mut msg: Option<Result<String, String>> = None;
         card(ui, |ui| {
-            ui.label(RichText::new("Your own Claude").size(17.0).strong());
-            ui.label(RichText::new("Dia's AI already runs on a built-in copy of Claude Code. Clia hands it your own Claude subscription (Pro or Max) and lets it reach Anthropic directly instead of Dia's servers. Dia's tools — tabs, pages, apps — keep working.").color(MUTED));
+            ui.label(RichText::new("Claude").size(17.0).strong());
+            ui.label(RichText::new("Dia's own AI is switched off in Clia, with its plan prompts and Atlassian. In its place: a Claude button where Dia's Chat button sits, opening a Claude sidebar (⇧⌘K) in your window's colours. It answers with the Claude Code on this Mac, on your own Claude subscription.").color(MUTED));
             ui.add_space(4.0);
-            changed |= ui.checkbox(&mut self.settings.own_claude, RichText::new("Use my own Claude subscription").strong()).changed();
-            if self.settings.own_claude {
-                ui.indent("tok", |ui| {
-                    if self.snap.has_token {
+            changed |= ui.checkbox(&mut self.settings.own_claude, RichText::new("Claude sidebar").strong()).changed();
+            ui.indent("cc", |ui| {
+                ui.label(RichText::new("Reads the tab you're on, and the apps connected to your Claude account (Gmail, Calendar, Slack, Notion…), never Atlassian.").color(MUTED));
+                changed |= ui.checkbox(&mut self.settings.daily_brief, "Daily brief: each morning, Claude sums up your calendar, email, messages and tasks").changed();
+                match &self.snap.claude {
+                    Some(v) => {
                         ui.horizontal(|ui| {
-                            pill(ui, "Claude connected", GOOD);
-                            if ui.small_button("Disconnect").clicked() {
-                                byo::clear_token();
-                                self.snap_age = -10.0;
-                            }
-                        });
-                    } else {
-                        ui.horizontal_wrapped(|ui| {
-                            pill(ui, "Not connected", WARN);
-                            if ui.add(egui::Button::new(RichText::new("Connect my Claude subscription").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                                msg = Some(byo::start_setup_token().map(|_| "Terminal opened: sign in there; Clia picks up the token by itself.".into()));
-                            }
-                        });
-                        ui.label(RichText::new("This runs `claude setup-token` (Claude Code must be installed). Or paste a token from it here:").color(MUTED).size(12.5));
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.token_input).password(true).hint_text("sk-ant-oat01-…").desired_width(320.0));
-                            if ui.button("Save").clicked() {
-                                msg = Some(byo::save_token(&self.token_input).map(|_| "Claude connected.".into()));
-                                self.token_input.clear();
-                                self.snap_age = -10.0;
-                            }
+                            pill(ui, "Claude Code found", GOOD);
+                            ui.label(RichText::new(v).color(MUTED));
                         });
                     }
-                    ui.label(RichText::new("Codex isn't possible: Dia's agent only runs Claude Code.").color(MUTED).size(12.5));
-                });
-            }
-            ui.add_space(4.0);
-            ui.label(RichText::new("Atlassian is always removed in Clia (sign-in, Jira and Confluence, Atlassian tools).").color(MUTED));
-            changed |= ui
-                .checkbox(&mut self.settings.applescript_js, "Allow JavaScript from AppleScript (only needed for automation tools)")
-                .changed();
+                    None => {
+                        pill(ui, "Claude Code not found", WARN);
+                        ui.label(RichText::new("Install Claude Code from claude.com/code and sign in once (run `claude` in Terminal).").color(MUTED));
+                    }
+                }
+            });
             if self.pending_rebuild() {
                 ui.label(RichText::new("Press “Rebuild Clia now” to apply these choices.").color(WARN));
             }
         });
         if changed {
             self.settings.save();
-        }
-        if let Some(m) = msg {
-            let mut g = self.progress.lock().unwrap();
-            match m {
-                Ok(t) => {
-                    g.error = None;
-                    g.last_result = Some(t)
-                }
-                Err(e) => g.error = Some(e),
-            }
         }
     }
 

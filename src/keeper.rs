@@ -1,6 +1,6 @@
 //! Didia Keeper's work: read Dia's official update feed, download and verify official
 //! releases, build Didia or Clia from them (patch + re-sign) and install it.
-use crate::{byo, flags, macho};
+use crate::{flags, macho};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -52,7 +52,7 @@ pub enum Edition {
     /// Dia without AI and without Atlassian.
     #[default]
     Didia,
-    /// Dia's AI kept, Atlassian removed, Dia's built-in agent run on your own Claude subscription.
+    /// Dia's plan-locked AI and Atlassian removed; a Claude panel on your own Claude Code instead.
     Clia,
 }
 impl Edition {
@@ -82,20 +82,23 @@ pub struct Settings {
     /// Didia: switch Atlassian off (Clia always does).
     pub remove_atlassian: bool,
     pub applescript_js: bool,
-    /// Clia: run Dia's built-in agent on the person's own Claude subscription.
+    /// Clia: add the Claude panel that runs the person's own Claude Code.
     pub own_claude: bool,
+    /// Clia: make a daily brief from the person's connected apps each morning.
+    pub daily_brief: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Settings { edition: Edition::Didia, remove_ai: true, remove_atlassian: true, applescript_js: false, own_claude: true }
+        Settings { edition: Edition::Didia, remove_ai: true, remove_atlassian: true, applescript_js: false, own_claude: true, daily_brief: true }
     }
 }
 impl Settings {
     /// (AI off, Atlassian off, Dia's paid-plan prompts off) for the chosen edition.
+    /// Clia switches Dia's own AI off too (it is tied to Dia's plans) and brings its own panel.
     pub fn switches(&self) -> (bool, bool, bool) {
         match self.edition {
             Edition::Didia => (self.remove_ai, self.remove_atlassian, self.remove_ai),
-            Edition::Clia => (false, true, self.own_claude),
+            Edition::Clia => (true, true, true),
         }
     }
     pub fn load() -> Self {
@@ -151,7 +154,7 @@ pub fn app_info(app: &Path) -> Option<AppInfo> {
         let pd = p.as_dictionary().cloned().unwrap_or_default();
         let b = |k: &str| pd.get(k).and_then(|v| v.as_boolean()).unwrap_or(false);
         let edition = if pd.get("edition").and_then(|v| v.as_string()) == Some("Clia") { Edition::Clia } else { Edition::Didia };
-        MadeBy::Keeper { edition, ai_off: b("removeAI"), atlassian_off: b("removeAtlassian"), own_claude: b("ownClaude") }
+        MadeBy::Keeper { edition, ai_off: b("removeAI"), atlassian_off: b("removeAtlassian"), own_claude: b("claudePanel") }
     } else if matches!(d.get("CFBundleDisplayName").and_then(|v| v.as_string()), Some("Didia") | Some("Clia")) {
         MadeBy::Unknown
     } else {
@@ -233,6 +236,45 @@ pub fn is_running(e: Edition) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Quit an edition the normal way (Dia restores its windows next time), waiting up to 30 s.
+pub fn quit_edition(e: Edition) -> Result<(), String> {
+    if !is_running(e) {
+        return Ok(());
+    }
+    let script = format!("tell application \"{}\" to quit", e.install_path().display());
+    let _ = Command::new("/usr/bin/osascript").args(["-e", &script]).output();
+    for _ in 0..60 {
+        if !is_running(e) {
+            log(&format!("quit {}", e.name()));
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!("{} didn't quit; quit it yourself, then open {}", e.name(), e.other().name()))
+}
+
+/// Open an edition. Didia and Clia share Dia's profile, so the other one is quit first
+/// (otherwise the running one would just take over the request).
+pub fn open_edition(e: Edition) -> Result<String, String> {
+    if !e.install_path().exists() {
+        return Err(format!("{} isn't installed yet", e.name()));
+    }
+    quit_edition(e.other())?;
+    run("/usr/bin/open", &[e.install_path().to_str().unwrap()])?;
+    log(&format!("opened {}", e.name()));
+    Ok(format!("{} is open.", e.name()))
+}
+
+/// Whether the installed edition matches the current choices (else it needs a rebuild).
+pub fn installed_matches(s: &Settings) -> bool {
+    let (ai, atl, _) = s.switches();
+    let own = s.edition == Edition::Clia && s.own_claude;
+    matches!(
+        app_info(&s.edition.install_path()).map(|i| i.made_by),
+        Some(MadeBy::Keeper { ai_off, atlassian_off, own_claude, .. }) if ai_off == ai && atlassian_off == atl && own_claude == own
+    )
 }
 
 fn notify(msg: &str) {
@@ -373,10 +415,6 @@ pub fn build_edition(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) 
         d.insert("CFBundleDisplayName".into(), plist::Value::String(name.into()));
     }
     info.to_file_xml(&info_path).map_err(|e| e.to_string())?;
-    if s.edition == Edition::Clia && s.own_claude {
-        set_step(p, "Pointing Dia's agent at your own Claude", None);
-        byo::apply(&contents)?;
-    }
     flags::patch_config(s)
         .to_file_xml(contents.join("Resources/DidiaPatch.plist"))
         .map_err(|e| e.to_string())?;
@@ -392,7 +430,7 @@ pub fn build_edition(src: &Path, dest: &Path, s: &Settings, p: &Option<Shared>) 
     let _ = run("/usr/bin/xattr", &["-dr", "com.apple.quarantine", d]);
     let v = app_info(dest).map(|i| i.version).unwrap_or_default();
     let (ai, atl, _) = s.switches();
-    log(&format!("built {name} {v} (AI off: {ai}, Atlassian off: {atl}, own Claude: {})", s.edition == Edition::Clia && s.own_claude));
+    log(&format!("built {name} {v} (AI off: {ai}, Atlassian off: {atl}, Claude panel: {})", s.edition == Edition::Clia && s.own_claude));
     Ok(())
 }
 
@@ -448,14 +486,25 @@ pub fn rebuild_and_install(s: &Settings, p: &Option<Shared>) -> Result<String, S
     }
 }
 
-/// The background job: install a waiting build, then (at most every 4 hours) check
-/// the official feed and build any newer release of the chosen edition.
+/// Editions to keep current: the chosen one, plus any other one this tool installed.
+pub fn editions_to_keep(s: &Settings) -> Vec<Edition> {
+    let mut v = vec![s.edition];
+    let o = s.edition.other();
+    if matches!(app_info(&o.install_path()).map(|i| i.made_by), Some(MadeBy::Keeper { .. })) {
+        v.push(o);
+    }
+    v
+}
+
+/// The background job: install waiting builds, then (at most every 4 hours) check the
+/// official feed and rebuild every installed edition when a newer release is out.
 pub fn check_and_update(force: bool, s: &Settings, p: &Option<Shared>) -> Result<String, String> {
-    let e = s.edition;
-    let name = e.name();
-    if staged_app(e).exists() && !is_running(e) {
-        if let Ok(v) = install_staged(e) {
-            notify(&format!("{name} updated to {v}"));
+    let editions = editions_to_keep(s);
+    for &e in &editions {
+        if staged_app(e).exists() && !is_running(e) {
+            if let Ok(v) = install_staged(e) {
+                notify(&format!("{} updated to {v}", e.name()));
+            }
         }
     }
     let stamp = work_dir().join("last_check");
@@ -478,17 +527,26 @@ pub fn check_and_update(force: bool, s: &Settings, p: &Option<Shared>) -> Result
     if let Some(p) = p {
         p.lock().unwrap().latest = Some(rel.clone());
     }
-    let have = app_info(&staged_app(e)).map(|i| i.build).unwrap_or(0);
-    let installed = app_info(&e.install_path());
-    let installed_build = installed.as_ref().map(|i| i.build).unwrap_or(0);
-    let installed_ok = matches!(installed.as_ref().map(|i| &i.made_by), Some(MadeBy::Keeper { .. }));
-    if rel.build <= have.max(installed_build) && installed_ok {
-        return Ok(format!("{name} is up to date (Dia {}).", rel.version));
+    let mut done = vec![];
+    for &e in &editions {
+        let se = Settings { edition: e, ..s.clone() };
+        let have = app_info(&staged_app(e)).map(|i| i.build).unwrap_or(0);
+        let installed_build = app_info(&e.install_path()).map(|i| i.build).unwrap_or(0);
+        // The chosen edition is also rebuilt when its choices changed; others only for new releases.
+        let current = rel.build <= have.max(installed_build) && (e != s.edition || installed_matches(&se));
+        if current {
+            continue;
+        }
+        if rel.build > app_info(&pristine_app()).map(|i| i.build).unwrap_or(0) {
+            download_release(&rel, p)?;
+        }
+        done.push(rebuild_and_install(&se, p)?);
     }
-    if rel.build > app_info(&pristine_app()).map(|i| i.build).unwrap_or(0) {
-        download_release(&rel, p)?;
+    if done.is_empty() {
+        let names: Vec<&str> = editions.iter().map(|e| e.name()).collect();
+        return Ok(format!("{} up to date (Dia {}).", names.join(" and "), rel.version));
     }
-    let msg = rebuild_and_install(s, p)?;
+    let msg = done.join(" ");
     if p.is_none() {
         notify(&msg);
     }

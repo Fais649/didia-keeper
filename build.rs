@@ -8,7 +8,7 @@ fn main() {
         .args([
             "-arch", "arm64", "-dynamiclib", "-fobjc-arc", "-O2",
             "-mmacosx-version-min=13.0",
-            "-framework", "Cocoa",
+            "-framework", "Cocoa", "-framework", "QuartzCore", "-Wno-objc-string-concatenation",
             "-install_name", "@executable_path/../Frameworks/libdidia.dylib",
             "-o",
         ])

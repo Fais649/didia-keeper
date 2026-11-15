@@ -119,40 +119,54 @@
       "source": "patch/didia_patch.m"
     },
     {
-      "name": "Clia AI",
+      "name": "Clia page text limit",
       "group": "clia",
-      "value": "kept, on your own Claude subscription",
-      "source": "src/byo.rs; agent-server.js start-up (Vertex env) in Dia's agent-server.map"
-    },
-    {
-      "name": "Clia token variable",
-      "group": "clia",
-      "value": "CLAUDE_CODE_OAUTH_TOKEN",
-      "source": "Claude Code env list in Dia's handler.js"
-    },
-    {
-      "name": "Clia model id rewrite",
-      "group": "clia",
-      "value": "name@date -> name-date",
-      "source": "Vertex vs Anthropic model naming"
-    },
-    {
-      "name": "Clia sandbox network",
-      "group": "clia",
-      "value": "tcp *:443",
-      "source": "agent-claude-code.sb allowed only localhost:GATEWAY_PORT"
-    },
-    {
-      "name": "Clia plan prompts",
-      "group": "clia",
-      "value": false,
-      "source": "src/flags.rs PLAN_FLAGS (Dia flag names)"
+      "value": 40000,
+      "unit": "characters",
+      "source": "patch/didia_patch.m pageContext"
     },
     {
       "name": "Codex support",
       "group": "clia",
       "value": false,
-      "source": "no Codex harness in Dia's handler.js (0 mentions)"
+      "estimated": true
+    },
+    {
+      "name": "Clia Dia AI",
+      "group": "clia",
+      "value": "off (plan-locked)",
+      "source": "Dia strings: 'Title shown to unpaid users when chat is unavailable'"
+    },
+    {
+      "name": "Clia sidebar shortcut",
+      "group": "clia",
+      "value": "Shift+Cmd+K",
+      "source": "patch/didia_patch.m installMenu"
+    },
+    {
+      "name": "Clia sidebar width",
+      "group": "clia",
+      "value": 440,
+      "unit": "pt",
+      "source": "Dia's own sidebar is 480 pt (view tree in Clia)"
+    },
+    {
+      "name": "Clia model runner",
+      "group": "clia",
+      "value": "claude -p --output-format json",
+      "source": "patch/didia_patch.m runClaude"
+    },
+    {
+      "name": "Clia tools allowed",
+      "group": "clia",
+      "value": "WebFetch, WebSearch, connected claude.ai apps except Atlassian",
+      "source": "patch/didia_patch.m runClaude/loadApps"
+    },
+    {
+      "name": "Clia daily brief time",
+      "group": "clia",
+      "value": "after 05:00, once a day",
+      "estimated": true
     }
   ]
 }

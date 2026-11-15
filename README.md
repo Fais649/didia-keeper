@@ -7,7 +7,7 @@ for macOS, and keeps it up to date automatically:
 
 | | **Didia** | **Clia** |
 |---|---|---|
-| Dia's AI (Chat, agents, Morning Brief…) | switched off | kept, running on **your own Claude subscription** |
+| Dia's AI (Chat, agents, Morning Brief…) | switched off | switched off, replaced by a **Claude panel** on your own Claude Code subscription |
 | Atlassian (sign-in, Jira, Confluence, tools) | switched off | switched off |
 | Dia plan, trial and usage prompts | switched off | switched off |
 | Installed as | `/Applications/Didia.app` | `/Applications/Clia.app` |
@@ -41,23 +41,29 @@ Nothing is removed from Dia's files, and your saved Dia preferences are never ch
 - The patch library is [`patch/didia_patch.m`](patch/didia_patch.m).
 - [`MECHANICS.md`](MECHANICS.md) explains how it was worked out.
 
-## Clia: bring your own Claude
+## Clia: your own Claude instead of Dia's AI
 
-Dia's AI already runs on a built-in copy of Claude Code. Dia starts it in a sandbox that may only
-talk to Dia's own model gateway. Clia changes three things:
-- it puts a tiny launcher in front of that Claude Code;
-- the launcher hands Claude Code your subscription token and drops the gateway settings;
-- the sandbox may now reach Anthropic's API over HTTPS.
+Dia's own AI only works with a Dia plan. Clia switches it off, together with its plan prompts and
+Atlassian, just like Didia. In its place:
 
-Dia's tools (tabs, pages, connected apps) keep going through Dia as before.
+- **A Claude button** where Dia's Chat button sits, styled like it. It opens a **Claude
+  sidebar** on the right of the window (or press **⇧⌘K**), in your window's theme colours, with a
+  header (new chat, daily brief, connected apps, close) and a rounded composer.
+- **Ask about the tab you're on.** "This tab" lets Claude read the open page (address, title and
+  text) through Dia's AppleScript support, so Clia turns on Dia's "JavaScript from AppleScript"
+  option. Page text is treated as untrusted.
+- **Connected apps.** Claude uses the apps connected to your Claude account (Gmail, Calendar,
+  Drive, Slack, Notion…), as `claude mcp list` shows them. Atlassian is always left out. Claude only
+  reads from them unless you ask it to send or change something. The grid icon lists them;
+  manage them at claude.ai → Settings → Connectors.
+- **Daily brief.** Each morning (after 5:00) Clia asks Claude for your brief: today's
+  meetings, email that needs you, messages and mentions, tasks and docs. It appears when you open
+  the sidebar, or from the sun icon. Turn it off in Didia Keeper.
 
-To connect, press **Connect my Claude subscription** in the app. It runs `claude setup-token`
-(you need [Claude Code](https://claude.com/code) and a Pro or Max plan). You can also paste a
-token from it. The token is stored only on your Mac, in
-`~/Library/Application Support/Didia Keeper/claude-token` (readable only by you).
-
-Codex isn't supported: Dia's agent is built around Claude Code. Some of Dia's AI may still go
-through Dia's servers, or still need a Dia account.
+Answers come from the [Claude Code](https://claude.com/code) installed on your Mac (`claude -p`),
+on the account it's signed in to, so your Claude Pro or Max subscription is used. Nothing goes
+through Dia's servers. You need Claude Code installed and signed in once (run `claude` in Terminal).
+Codex isn't supported.
 
 ## Updates
 
@@ -94,7 +100,7 @@ In the window, pick **Didia** or **Clia**, press **Rebuild … now**, then turn 
 | `didia-keeper --background` | the job automatic updates runs |
 
 Files it uses:
-- `~/Library/Application Support/Didia Keeper/`: the kept official copy, your settings and (Clia) your Claude token
+- `~/Library/Application Support/Didia Keeper/`: the kept official copy and your settings
 - `~/Library/Logs/DidiaKeeper.log`: the Keeper's log
 - `~/Library/Logs/Didia.log`: the patch's log
 - `~/Library/LaunchAgents/com.didia.keeper.plist`: the background job, only while automatic updates are on
