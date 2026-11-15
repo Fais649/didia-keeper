@@ -17,4 +17,16 @@ fn main() {
         .status()
         .expect("clang is needed to build the Didia patch");
     assert!(status.success(), "building the Didia patch failed");
+
+    // Small helper that makes an app the default browser (macOS asks the person to confirm).
+    println!("cargo:rerun-if-changed=patch/set_default.m");
+    let helper = PathBuf::from(env::var("OUT_DIR").unwrap()).join("set-default");
+    let status = Command::new("clang")
+        .args(["-arch", "arm64", "-fobjc-arc", "-O2", "-mmacosx-version-min=13.0",
+               "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-o"])
+        .arg(&helper)
+        .arg("patch/set_default.m")
+        .status()
+        .expect("clang is needed to build the default-browser helper");
+    assert!(status.success(), "building the default-browser helper failed");
 }

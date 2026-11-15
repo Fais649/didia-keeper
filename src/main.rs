@@ -10,6 +10,7 @@
 //!   didia-keeper --edition clia  (with the above) use this edition instead of the saved one
 //!   didia-keeper --select clia   save the edition to build (didia or clia)
 //!   didia-keeper --enable-updates  turn on automatic updates
+//!   didia-keeper --make-default didia  make Didia (or clia) the default web browser
 //!   didia-keeper --launch        build the chosen edition if needed, then open it (quitting the other)
 //!   didia-keeper --screenshot F  draw about 120 frames, save the window to F (PNG), quit
 mod byo;
@@ -40,6 +41,24 @@ fn main() {
         s.save();
         keeper::log(&format!("switched to {}", s.edition.name()));
         println!("edition: {}", s.edition.name());
+        let more = ["--make-default", "--enable-updates", "--background", "--update", "--rebuild", "--launch", "--build-to", "--screenshot"];
+        if !args.iter().any(|a| more.contains(&a.as_str())) {
+            return;
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--make-default") {
+        let e = match args.get(i + 1).map(|s| s.to_lowercase()) {
+            Some(s) if s == "clia" => Edition::Clia,
+            _ => Edition::Didia,
+        };
+        match keeper::make_default_browser(e) {
+            Ok(m) => println!("{m}"),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+        return;
     }
     if has("--enable-updates") {
         match keeper::enable_background_updates() {
@@ -199,6 +218,7 @@ struct Snapshot {
     running: bool,
     other_running: bool,
     claude: Option<String>,
+    default_browser: Option<PathBuf>,
     last_check: Option<std::time::SystemTime>,
     log: Vec<String>,
 }
@@ -214,6 +234,7 @@ impl Snapshot {
             running: keeper::is_running(e),
             other_running: keeper::is_running(e.other()),
             claude: byo::claude_version(),
+            default_browser: keeper::default_browser(),
             last_check: keeper::last_check(),
             log: keeper::log_tail(40),
         }
@@ -286,6 +307,7 @@ impl KeeperApp {
                             Job::Rebuild => keeper::rebuild_and_install(&s, &sp),
                             Job::Install => keeper::install_staged(s.edition).map(|v| format!("{} {v} is installed.", s.edition.name())),
                             Job::Open => keeper::open_edition(s.edition),
+                            Job::MakeDefault => keeper::make_default_browser(s.edition),
                             Job::Peek => unreachable!(),
                         }
                     }
@@ -313,6 +335,7 @@ enum Job {
     Rebuild,
     Install,
     Open,
+    MakeDefault,
 }
 
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -482,6 +505,13 @@ impl KeeperApp {
                     None => "not on this Mac — official releases are downloaded instead".into(),
                 });
                 ui.end_row();
+                ui.label(RichText::new("Default browser").color(MUTED));
+                ui.label(match &snap.default_browser {
+                    Some(p) if *p == self.settings.edition.install_path() => format!("{name} ✓"),
+                    Some(p) => p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                    None => "—".into(),
+                });
+                ui.end_row();
                 if let Some(s) = &snap.staged {
                     ui.label(RichText::new("Waiting to install").color(MUTED));
                     ui.label(RichText::new(format!("{name} {} — installs when {name} is closed", s.version)).color(WARN));
@@ -508,6 +538,10 @@ impl KeeperApp {
                     if snap.staged.is_some() && !snap.running && ui.button("Install now").clicked() {
                         self.start(Job::Install);
                     }
+                    let is_default = snap.default_browser.as_deref() == Some(self.settings.edition.install_path().as_path());
+                    if snap.installed.is_some() && !is_default && ui.button("Make default browser").on_hover_text("macOS asks you to confirm").clicked() {
+                        self.start(Job::MakeDefault);
+                    }
                     if snap.installed.is_some() && ui.button(format!("Open {name}")).clicked() {
                         self.start(Job::Open);
                     }
@@ -529,12 +563,12 @@ impl KeeperApp {
         let mut changed = false;
         card(ui, |ui| {
             ui.label(RichText::new("What's taken out").size(17.0).strong());
-            ui.label(RichText::new("Didia switches these off with Dia's own feature switches, and hides any button that still shows.").color(MUTED));
+            ui.label(RichText::new("Always, in every Didia build: Dia's own feature switches turn these off, and any button that still shows is hidden.").color(MUTED));
             ui.add_space(6.0);
-            changed |= ui.checkbox(&mut self.settings.remove_ai, RichText::new("AI features").strong()).changed();
+            ui.label(RichText::new("✓  AI features").strong());
             ui.indent("ai", |ui| {
-                ui.label(RichText::new("Chat and “Chat with this tab”, Ask on page, Skills, agents and browse-for-me, Morning Brief, memory and personalization, AI tab clean-up and renaming, AI upsells and trials.").color(MUTED));
-                let label = if self.show_ai_list { "Hide the switches" } else { format!("Show the {} switches", flags::AI_FLAGS.len()).leak() as &str };
+                ui.label(RichText::new("The Chat button and “Chat with this tab”, the chat sidebar, Ask on page, Skills, agents and browse-for-me, Morning Brief, memory and personalization, AI tab clean-up and renaming, AI upsells, trials and plan prompts.").color(MUTED));
+                let label = if self.show_ai_list { "Hide the switches" } else { "Show the switches" };
                 if ui.link(label).clicked() {
                     self.show_ai_list = !self.show_ai_list;
                 }
@@ -543,10 +577,10 @@ impl KeeperApp {
                 }
             });
             ui.add_space(4.0);
-            changed |= ui.checkbox(&mut self.settings.remove_atlassian, RichText::new("Atlassian").strong()).changed();
+            ui.label(RichText::new("✓  Atlassian").strong());
             ui.indent("atl", |ui| {
                 ui.label(RichText::new("Atlassian sign-in and sign-up, Jira and Confluence connections, Atlassian tools and onboarding step, Atlassian account buttons.").color(MUTED));
-                let label = if self.show_atl_list { "Hide the switches" } else { format!("Show the {} switches", flags::ATLASSIAN_FLAGS.len() + 1).leak() as &str };
+                let label = if self.show_atl_list { "Hide the switches" } else { "Show the switches" };
                 if ui.link(label).clicked() {
                     self.show_atl_list = !self.show_atl_list;
                 }

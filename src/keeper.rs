@@ -97,7 +97,8 @@ impl Settings {
     /// Clia switches Dia's own AI off too (it is tied to Dia's plans) and brings its own panel.
     pub fn switches(&self) -> (bool, bool, bool) {
         match self.edition {
-            Edition::Didia => (self.remove_ai, self.remove_atlassian, self.remove_ai),
+            // Didia always has Dia's AI (chat button included) and Atlassian switched off completely.
+            Edition::Didia => (true, true, true),
             Edition::Clia => (true, true, true),
         }
     }
@@ -617,6 +618,63 @@ pub fn enable_background_updates() -> Result<(), String> {
     run("/bin/launchctl", &["bootstrap", &domain, agent_plist().to_str().unwrap()])?;
     log("background updates on");
     Ok(())
+}
+
+const SET_DEFAULT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/set-default"));
+
+fn set_default_helper() -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = work_dir().join("set-default");
+    fs::create_dir_all(work_dir()).map_err(|e| e.to_string())?;
+    if fs::read(&path).map(|b| b != SET_DEFAULT).unwrap_or(true) {
+        fs::write(&path, SET_DEFAULT).map_err(|e| e.to_string())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
+/// The app that opens web links now.
+pub fn default_browser() -> Option<PathBuf> {
+    let out = Command::new(set_default_helper().ok()?).arg("--query").output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("default: "))
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Make an edition the default web browser. macOS shows a dialog the person confirms.
+/// Didia and Clia share Dia's app identity, so the other edition is taken out of the
+/// list of apps macOS picks from (it still opens normally from Applications).
+pub fn make_default_browser(e: Edition) -> Result<String, String> {
+    let path = e.install_path();
+    if !path.exists() {
+        return Err(format!("{} isn't installed yet", e.name()));
+    }
+    let helper = set_default_helper()?;
+    let lsr = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    let others = [e.other().install_path(), pristine_app(), staged_app(e.other()), work_dir().join(format!("previous/{}.app", e.other().name()))];
+    for o in &others {
+        if o.exists() {
+            let _ = run(lsr, &["-u", o.to_str().unwrap()]);
+        }
+    }
+    let _ = run(lsr, &["-f", path.to_str().unwrap()]);
+    let out = Command::new(&helper).arg(&path).output().map_err(|e| e.to_string())?;
+    let now = default_browser();
+    log(&format!("asked to make {} the default browser: now {}", e.name(), now.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
+    if now.as_deref() == Some(path.as_path()) {
+        Ok(format!("{} is your default browser.", e.name()))
+    } else if out.status.code() == Some(3) {
+        Err("macOS is still waiting for you to confirm the change in its dialog.".into())
+    } else {
+        Err(format!(
+            "{} isn't the default yet (links open {}). {}",
+            e.name(),
+            now.map(|p| p.display().to_string()).unwrap_or_else(|| "nothing".into()),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 /// Keep the background updater's copy of this program current (it runs that copy).
