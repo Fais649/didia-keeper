@@ -46,8 +46,8 @@ Didia Keeper makes it from an official copy and keeps it current.
 - Backup: every 0.5 s the patch hides views whose accessibility label, title or class matches:
   - the labels "Chat", "Chat with this tab", "… only available when you have chat usage",
     "Personalization on for new chats" and "Delete chat";
-  - the classes `AssistantCapabilitiesToolbarView`, `AssistantPersonalityUI.PersonalizeButton` and
-    `NavigationBar.AssistantBarView`;
+  - the classes `AssistantCapabilitiesToolbarView` and `AssistantPersonalityUI.PersonalizeButton`
+    (not `NavigationBar.AssistantBarView`: in Dia 1.57 it also holds the URL bar);
   - any label containing "Atlassian".
 
   Page content views (`RenderWidgetHostView*`, `WebContents*`) are never touched.
