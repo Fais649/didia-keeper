@@ -119,7 +119,8 @@ pub fn hide_rules() -> HideRules {
         view_classes: vec![
             "AssistantCapabilitiesToolbarView",
             "AssistantPersonalityUI.PersonalizeButton",
-            "NavigationBar.AssistantBarView",
+            // Not NavigationBar.AssistantBarView: in Dia 1.57 it also holds the URL bar, so hiding
+            // it hid the address. Its "Delete chat" button is hidden by label instead.
             "MorningBriefTeaser",
             // Dia's plan prompts ("View Plans" and upsell cards) for its own AI.
             "ChatUsageUpgradePlaceholder",
